@@ -446,6 +446,10 @@ function genServerXrpcMethod(
         type: 'Uint8Array | stream.Readable',
       })
     }
+    handlerSuccess.addProperty({
+      name: 'headers?',
+      type: '{ [key: string]: string }',
+    })
   }
 
   // export interface HandlerError {...}
@@ -530,6 +534,7 @@ function genServerXrpcStreaming(
         auth: HA
         params: QueryParams
         req: IncomingMessage
+        signal: AbortSignal
       }) => AsyncIterable<HandlerOutput>`,
   })
 }

@@ -1,14 +1,18 @@
 import { InvalidRequestError } from '@atproto/xrpc-server'
 import { Server } from '../../../../lexicon'
-import { FeedAlgorithm, FeedKeyset, composeFeed } from '../util/feed'
+import {
+  FeedAlgorithm,
+  FeedKeyset,
+  composeFeed,
+  getFeedDateThreshold,
+} from '../util/feed'
 import { paginate } from '../../../../db/pagination'
 import AppContext from '../../../../context'
-import { authVerifier } from '../util'
 
 // @TODO getTimeline() will be replaced by composeTimeline() in the app-view
 export default function (server: Server, ctx: AppContext) {
   server.app.bsky.feed.getTimeline({
-    auth: authVerifier,
+    auth: ctx.authVerifier,
     handler: async ({ params, auth }) => {
       const { algorithm, limit, cursor } = params
       const db = ctx.db.db
@@ -20,11 +24,18 @@ export default function (server: Server, ctx: AppContext) {
       }
 
       const feedService = ctx.services.feed(ctx.db)
+      const labelService = ctx.services.label(ctx.db)
 
       const followingIdsSubquery = db
         .selectFrom('follow')
         .select('follow.subjectDid')
         .where('follow.creator', '=', requester)
+
+      const keyset = new FeedKeyset(
+        ref('feed_item.sortAt'),
+        ref('feed_item.cid'),
+      )
+      const sortFrom = keyset.unpack(cursor)?.primary
 
       // @NOTE mutes applied on pds
       let feedItemsQb = feedService
@@ -34,11 +45,7 @@ export default function (server: Server, ctx: AppContext) {
             .where('originatorDid', '=', requester)
             .orWhere('originatorDid', 'in', followingIdsSubquery),
         )
-
-      const keyset = new FeedKeyset(
-        ref('feed_item.sortAt'),
-        ref('feed_item.cid'),
-      )
+        .where('feed_item.sortAt', '>', getFeedDateThreshold(sortFrom))
 
       feedItemsQb = paginate(feedItemsQb, {
         limit,
@@ -46,7 +53,12 @@ export default function (server: Server, ctx: AppContext) {
         keyset,
       })
       const feedItems = await feedItemsQb.execute()
-      const feed = await composeFeed(feedService, feedItems, requester)
+      const feed = await composeFeed(
+        feedService,
+        labelService,
+        feedItems,
+        requester,
+      )
 
       return {
         encoding: 'application/json',

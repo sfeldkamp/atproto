@@ -1,20 +1,15 @@
 import AtpAgent from '@atproto/api'
-import { FeedViewPost } from '../../src/lexicon/types/app/bsky/feed/defs'
-import {
-  runTestServer,
-  forSnapshot,
-  CloseFn,
-  getOriginator,
-  paginateAll,
-  processAll,
-} from '../_util'
+import { TestNetwork } from '@atproto/dev-env'
+import { TAKEDOWN } from '@atproto/api/src/client/types/com/atproto/admin/defs'
+import { forSnapshot, getOriginator, paginateAll } from '../_util'
 import { SeedClient } from '../seeds/client'
 import basicSeed from '../seeds/basic'
 import { FeedAlgorithm } from '../../src/api/app/bsky/util/feed'
+import { FeedViewPost } from '../../src/lexicon/types/app/bsky/feed/defs'
 
 describe('timeline views', () => {
+  let network: TestNetwork
   let agent: AtpAgent
-  let close: CloseFn
   let sc: SeedClient
 
   // account dids, for convenience
@@ -24,23 +19,43 @@ describe('timeline views', () => {
   let dan: string
 
   beforeAll(async () => {
-    const server = await runTestServer({
-      dbPostgresSchema: 'views_home_feed',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_views_home_feed',
     })
-    close = server.close
-    agent = new AtpAgent({ service: server.url })
-    const pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    agent = network.bsky.getClient()
+    const pdsAgent = network.pds.getClient()
     sc = new SeedClient(pdsAgent)
     await basicSeed(sc)
-    await processAll(server)
+    await network.processAll()
+    await network.bsky.ctx.labeler.processAll()
     alice = sc.dids.alice
     bob = sc.dids.bob
     carol = sc.dids.carol
     dan = sc.dids.dan
+    // Label posts as "kind" to check labels on embed views
+    const labelPostA = sc.posts[bob][0].ref
+    const labelPostB = sc.posts[carol][0].ref
+    await network.bsky.ctx.services
+      .label(network.bsky.ctx.db)
+      .formatAndCreate(
+        network.bsky.ctx.cfg.labelerDid,
+        labelPostA.uriStr,
+        labelPostA.cidStr,
+        { create: ['kind'] },
+      )
+    await network.bsky.ctx.services
+      .label(network.bsky.ctx.db)
+      .formatAndCreate(
+        network.bsky.ctx.cfg.labelerDid,
+        labelPostB.uriStr,
+        labelPostB.cidStr,
+        { create: ['kind'] },
+      )
+    await network.bsky.ctx.labeler.processAll()
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
 
   // @TODO(bsky) blocks posts, reposts, replies by actor takedown via labels
@@ -58,7 +73,7 @@ describe('timeline views', () => {
     const aliceTL = await agent.api.app.bsky.feed.getTimeline(
       { algorithm: FeedAlgorithm.ReverseChronological },
       {
-        headers: sc.getHeaders(alice, true),
+        headers: await network.serviceHeaders(alice),
       },
     )
 
@@ -68,7 +83,7 @@ describe('timeline views', () => {
     const bobTL = await agent.api.app.bsky.feed.getTimeline(
       { algorithm: FeedAlgorithm.ReverseChronological },
       {
-        headers: sc.getHeaders(bob, true),
+        headers: await network.serviceHeaders(bob),
       },
     )
 
@@ -78,7 +93,7 @@ describe('timeline views', () => {
     const carolTL = await agent.api.app.bsky.feed.getTimeline(
       { algorithm: FeedAlgorithm.ReverseChronological },
       {
-        headers: sc.getHeaders(carol, true),
+        headers: await network.serviceHeaders(carol),
       },
     )
 
@@ -88,7 +103,7 @@ describe('timeline views', () => {
     const danTL = await agent.api.app.bsky.feed.getTimeline(
       { algorithm: FeedAlgorithm.ReverseChronological },
       {
-        headers: sc.getHeaders(dan, true),
+        headers: await network.serviceHeaders(dan),
       },
     )
 
@@ -100,13 +115,13 @@ describe('timeline views', () => {
     const defaultTL = await agent.api.app.bsky.feed.getTimeline(
       {},
       {
-        headers: sc.getHeaders(alice, true),
+        headers: await network.serviceHeaders(alice),
       },
     )
     const reverseChronologicalTL = await agent.api.app.bsky.feed.getTimeline(
       { algorithm: FeedAlgorithm.ReverseChronological },
       {
-        headers: sc.getHeaders(alice, true),
+        headers: await network.serviceHeaders(alice),
       },
     )
     expect(defaultTL.data.feed).toEqual(reverseChronologicalTL.data.feed)
@@ -121,7 +136,7 @@ describe('timeline views', () => {
           cursor,
           limit: 4,
         },
-        { headers: sc.getHeaders(carol, true) },
+        { headers: await network.serviceHeaders(carol) },
       )
       return res.data
     }
@@ -135,10 +150,105 @@ describe('timeline views', () => {
       {
         algorithm: FeedAlgorithm.ReverseChronological,
       },
-      { headers: sc.getHeaders(carol, true) },
+      { headers: await network.serviceHeaders(carol) },
     )
 
     expect(full.data.feed.length).toEqual(7)
     expect(results(paginatedAll)).toEqual(results([full.data]))
+  })
+
+  it('blocks posts, reposts, replies by actor takedown', async () => {
+    const actionResults = await Promise.all(
+      [bob, carol].map((did) =>
+        agent.api.com.atproto.admin.takeModerationAction(
+          {
+            action: TAKEDOWN,
+            subject: {
+              $type: 'com.atproto.admin.defs#repoRef',
+              did,
+            },
+            createdBy: 'did:example:admin',
+            reason: 'Y',
+          },
+          {
+            encoding: 'application/json',
+            headers: network.pds.adminAuthHeaders(),
+          },
+        ),
+      ),
+    )
+
+    const aliceTL = await agent.api.app.bsky.feed.getTimeline(
+      { algorithm: FeedAlgorithm.ReverseChronological },
+      { headers: await network.serviceHeaders(alice) },
+    )
+
+    expect(forSnapshot(aliceTL.data.feed)).toMatchSnapshot()
+
+    // Cleanup
+    await Promise.all(
+      actionResults.map((result) =>
+        agent.api.com.atproto.admin.reverseModerationAction(
+          {
+            id: result.data.id,
+            createdBy: 'did:example:admin',
+            reason: 'Y',
+          },
+          {
+            encoding: 'application/json',
+            headers: network.pds.adminAuthHeaders(),
+          },
+        ),
+      ),
+    )
+  })
+
+  it('blocks posts, reposts, replies by record takedown.', async () => {
+    const postRef1 = sc.posts[dan][1].ref // Repost
+    const postRef2 = sc.replies[bob][0].ref // Post and reply parent
+    const actionResults = await Promise.all(
+      [postRef1, postRef2].map((postRef) =>
+        agent.api.com.atproto.admin.takeModerationAction(
+          {
+            action: TAKEDOWN,
+            subject: {
+              $type: 'com.atproto.repo.strongRef',
+              uri: postRef.uriStr,
+              cid: postRef.cidStr,
+            },
+            createdBy: 'did:example:admin',
+            reason: 'Y',
+          },
+          {
+            encoding: 'application/json',
+            headers: network.pds.adminAuthHeaders(),
+          },
+        ),
+      ),
+    )
+
+    const aliceTL = await agent.api.app.bsky.feed.getTimeline(
+      { algorithm: FeedAlgorithm.ReverseChronological },
+      { headers: await network.serviceHeaders(alice) },
+    )
+
+    expect(forSnapshot(aliceTL.data.feed)).toMatchSnapshot()
+
+    // Cleanup
+    await Promise.all(
+      actionResults.map((result) =>
+        agent.api.com.atproto.admin.reverseModerationAction(
+          {
+            id: result.data.id,
+            createdBy: 'did:example:admin',
+            reason: 'Y',
+          },
+          {
+            encoding: 'application/json',
+            headers: network.pds.adminAuthHeaders(),
+          },
+        ),
+      ),
+    )
   })
 })

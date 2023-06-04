@@ -142,16 +142,16 @@ describe('repo subscribe repos', () => {
     }
   }
 
-  const randomPost = async (by: string) => sc.post(by, randomStr(8, 'base32'))
+  const randomPost = (by: string) => sc.post(by, randomStr(8, 'base32'))
   const makePosts = async () => {
-    const promises: Promise<unknown>[] = []
     for (let i = 0; i < 10; i++) {
-      promises.push(randomPost(alice))
-      promises.push(randomPost(bob))
-      promises.push(randomPost(carol))
-      promises.push(randomPost(dan))
+      await Promise.all([
+        randomPost(alice),
+        randomPost(bob),
+        randomPost(carol),
+        randomPost(dan),
+      ])
     }
-    await Promise.all(promises)
   }
 
   const readTillCaughtUp = async <T>(
@@ -224,6 +224,9 @@ describe('repo subscribe repos', () => {
     ws.terminate()
 
     expect(evts.length).toBe(40)
+
+    await wait(100) // Let cleanup occur on server
+    expect(ctx.sequencer.listeners('events').length).toEqual(0)
   })
 
   it('backfills only from provided cursor', async () => {
@@ -294,9 +297,12 @@ describe('repo subscribe repos', () => {
 
   it('sync rebases', async () => {
     const prevHead = await agent.api.com.atproto.sync.getHead({ did: alice })
-    await ctx.db.transaction((dbTxn) =>
-      ctx.services.repo(dbTxn).rebaseRepo(alice, new Date().toISOString()),
+
+    await agent.api.com.atproto.repo.rebaseRepo(
+      { repo: alice },
+      { encoding: 'application/json', headers: sc.getHeaders(alice) },
     )
+
     const currHead = await agent.api.com.atproto.sync.getHead({ did: alice })
 
     const ws = new WebSocket(

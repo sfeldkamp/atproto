@@ -8,7 +8,9 @@ import { isObj, hasProp } from '../../../../util'
 import { CID } from 'multiformats/cid'
 import { HandlerAuth } from '@atproto/xrpc-server'
 
-export interface QueryParams {}
+export interface QueryParams {
+  seenAt?: string
+}
 
 export type InputSchema = undefined
 
@@ -22,6 +24,7 @@ export type HandlerInput = undefined
 export interface HandlerSuccess {
   encoding: 'application/json'
   body: OutputSchema
+  headers?: { [key: string]: string }
 }
 
 export interface HandlerError {

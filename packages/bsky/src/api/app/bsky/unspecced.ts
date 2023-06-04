@@ -4,13 +4,12 @@ import { FeedKeyset, composeFeed } from './util/feed'
 import { paginate } from '../../../db/pagination'
 import AppContext from '../../../context'
 import { FeedRow, FeedItemType } from '../../../services/types'
-import { authOptionalVerifier } from './util'
 import { countAll } from '../../../db/util'
 
 // THIS IS A TEMPORARY UNSPECCED ROUTE
 export default function (server: Server, ctx: AppContext) {
   server.app.bsky.unspecced.getPopular({
-    auth: authOptionalVerifier,
+    auth: ctx.authOptionalVerifier,
     handler: async ({ params, auth }) => {
       const { limit, cursor } = params
       const requester = auth.credentials.did
@@ -18,6 +17,7 @@ export default function (server: Server, ctx: AppContext) {
       const { ref } = db.dynamic
 
       const feedService = ctx.services.feed(ctx.db)
+      const labelService = ctx.services.label(ctx.db)
 
       const postsQb = ctx.db.db
         .selectFrom('post')
@@ -55,7 +55,12 @@ export default function (server: Server, ctx: AppContext) {
       feedQb = paginate(feedQb, { limit, cursor, keyset })
 
       const feedItems: FeedRow[] = await feedQb.execute()
-      const feed = await composeFeed(feedService, feedItems, requester)
+      const feed = await composeFeed(
+        feedService,
+        labelService,
+        feedItems,
+        requester,
+      )
 
       return {
         encoding: 'application/json',

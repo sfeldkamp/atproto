@@ -1,6 +1,7 @@
 import { sql } from 'kysely'
 import { AtUri } from '@atproto/uri'
 import { jsonStringToLex } from '@atproto/lexicon'
+import { dedupeStrs } from '@atproto/common'
 import Database from '../../db'
 import { countAll, noMatch, notSoftDeletedClause } from '../../db/util'
 import { ImageUriBuilder } from '../../image/uri'
@@ -9,9 +10,14 @@ import { isView as isViewExternal } from '../../lexicon/types/app/bsky/embed/ext
 import { View as ViewRecord } from '../../lexicon/types/app/bsky/embed/record'
 import { PostView } from '../../lexicon/types/app/bsky/feed/defs'
 import { ActorViewMap, FeedEmbeds, PostInfoMap, FeedItemType } from '../types'
+import { Labels, LabelService } from '../label'
 
 export class FeedService {
   constructor(public db: Database, public imgUriBuilder: ImageUriBuilder) {}
+
+  services = {
+    label: LabelService.creator(),
+  }
 
   static creator(imgUriBuilder: ImageUriBuilder) {
     return (db: Database) => new FeedService(db, imgUriBuilder)
@@ -65,37 +71,43 @@ export class FeedService {
   async getActorViews(
     dids: string[],
     viewer: string | null,
+    opts?: { skipLabels?: boolean }, // @NOTE used by composeFeed() to batch label hydration
   ): Promise<ActorViewMap> {
     if (dids.length < 1) return {}
     const { ref } = this.db.db.dynamic
-    const actors = await this.db.db
-      .selectFrom('actor')
-      .where('actor.did', 'in', dids)
-      .leftJoin('profile', 'profile.creator', 'actor.did')
-      .selectAll('actor')
-      .select([
-        'profile.uri as profileUri',
-        'profile.displayName as displayName',
-        'profile.description as description',
-        'profile.avatarCid as avatarCid',
-        'profile.indexedAt as indexedAt',
-        this.db.db
-          .selectFrom('follow')
-          .if(!viewer, (q) => q.where(noMatch))
-          .where('creator', '=', viewer ?? '')
-          .whereRef('subjectDid', '=', ref('actor.did'))
-          .select('uri')
-          .as('requesterFollowing'),
-        this.db.db
-          .selectFrom('follow')
-          .if(!viewer, (q) => q.where(noMatch))
-          .whereRef('creator', '=', ref('actor.did'))
-          .where('subjectDid', '=', viewer ?? '')
-          .select('uri')
-          .as('requesterFollowedBy'),
-      ])
-      .execute()
+    const { skipLabels } = opts ?? {}
+    const [actors, labels] = await Promise.all([
+      this.db.db
+        .selectFrom('actor')
+        .where('actor.did', 'in', dids)
+        .leftJoin('profile', 'profile.creator', 'actor.did')
+        .selectAll('actor')
+        .select([
+          'profile.uri as profileUri',
+          'profile.displayName as displayName',
+          'profile.description as description',
+          'profile.avatarCid as avatarCid',
+          'profile.indexedAt as indexedAt',
+          this.db.db
+            .selectFrom('follow')
+            .if(!viewer, (q) => q.where(noMatch))
+            .where('creator', '=', viewer ?? '')
+            .whereRef('subjectDid', '=', ref('actor.did'))
+            .select('uri')
+            .as('requesterFollowing'),
+          this.db.db
+            .selectFrom('follow')
+            .if(!viewer, (q) => q.where(noMatch))
+            .whereRef('creator', '=', ref('actor.did'))
+            .where('subjectDid', '=', viewer ?? '')
+            .select('uri')
+            .as('requesterFollowedBy'),
+        ])
+        .execute(),
+      this.services.label(this.db).getLabelsForSubjects(skipLabels ? [] : dids),
+    ])
     return actors.reduce((acc, cur) => {
+      const actorLabels = labels[cur.did] ?? []
       return {
         ...acc,
         [cur.did]: {
@@ -116,6 +128,7 @@ export class FeedService {
                 // muted field hydrated on pds
               }
             : undefined,
+          labels: skipLabels ? undefined : actorLabels,
         },
       }
     }, {} as ActorViewMap)
@@ -216,21 +229,17 @@ export class FeedService {
       extPromise,
       recordPromise,
     ])
-    const [postViews, actorViews, deepEmbedViews] = await Promise.all([
-      this.getPostViews(
-        records.map((p) => p.uri),
-        viewer,
-      ),
-      this.getActorViews(
-        records.map((p) => p.did),
-        viewer,
-      ),
-      this.embedsForPosts(
-        records.map((p) => p.uri),
-        viewer,
-        _depth + 1,
-      ),
-    ])
+    const nestedUris = dedupeStrs(records.map((p) => p.uri))
+    const nestedDids = dedupeStrs(records.map((p) => p.did))
+    const [postViews, actorViews, deepEmbedViews, labelViews] =
+      await Promise.all([
+        this.getPostViews(nestedUris, viewer),
+        this.getActorViews(nestedDids, viewer, { skipLabels: true }),
+        this.embedsForPosts(nestedUris, viewer, _depth + 1),
+        this.services
+          .label(this.db)
+          .getLabelsForSubjects([...nestedUris, ...nestedDids]),
+      ])
     let embeds = images.reduce((acc, cur) => {
       const embed = (acc[cur.postUri] ??= {
         $type: 'app.bsky.embed.images#view',
@@ -280,6 +289,7 @@ export class FeedService {
         actorViews,
         postViews,
         deepEmbedViews,
+        labelViews,
       )
       let deepEmbeds: ViewRecord['embeds'] | undefined
       if (_depth < 1) {
@@ -296,6 +306,7 @@ export class FeedService {
               cid: formatted.cid,
               author: formatted.author,
               value: formatted.record,
+              labels: formatted.labels,
               embeds: deepEmbeds,
               indexedAt: formatted.indexedAt,
             }
@@ -329,11 +340,16 @@ export class FeedService {
     actors: ActorViewMap,
     posts: PostInfoMap,
     embeds: FeedEmbeds,
+    labels: Labels,
   ): PostView | undefined {
     const post = posts[uri]
     const author = actors[post?.creator]
     if (!post || !author) return undefined
+    // If the author labels are not hydrated yet, attempt to pull them
+    // from labels: e.g. compatible with composeFeed() batching label hydration.
+    author.labels ??= labels[author.did] ?? []
     return {
+      $type: 'app.bsky.feed.defs#postView',
       uri: post.uri,
       cid: post.cid,
       author: author,
@@ -349,6 +365,7 @@ export class FeedService {
             like: post.requesterLike ?? undefined,
           }
         : undefined,
+      labels: labels[uri] ?? [],
     }
   }
 }

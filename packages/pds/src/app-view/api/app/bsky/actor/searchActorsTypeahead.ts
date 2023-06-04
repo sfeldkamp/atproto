@@ -34,12 +34,18 @@ export default function (server: Server, ctx: AppContext) {
           ? await getResultsPg(ctx.db, { term, limit })
           : await getResultsSqlite(ctx.db, { term, limit })
 
+      const actors = await services.appView
+        .actor(db)
+        .views.profileBasic(results, requester)
+
+      const filtered = actors.filter(
+        (actor) => !actor.viewer?.blocking && !actor.viewer?.blockedBy,
+      )
+
       return {
         encoding: 'application/json',
         body: {
-          actors: await services.appView
-            .actor(db)
-            .views.profileBasic(results, requester),
+          actors: filtered,
         },
       }
     },
@@ -48,7 +54,6 @@ export default function (server: Server, ctx: AppContext) {
 
 const getResultsPg: GetResultsFn = async (db, { term, limit }) => {
   return await getUserSearchQueryPg(db, { term: term || '', limit })
-    .leftJoin('profile', 'profile.creator', 'did_handle.did')
     .selectAll('did_handle')
     .execute()
 }

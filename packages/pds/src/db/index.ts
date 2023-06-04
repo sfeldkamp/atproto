@@ -1,9 +1,22 @@
 import assert from 'assert'
-import { Kysely, SqliteDialect, PostgresDialect, Migrator, sql } from 'kysely'
+import {
+  Kysely,
+  SqliteDialect,
+  PostgresDialect,
+  Migrator,
+  sql,
+  KyselyPlugin,
+  PluginTransformQueryArgs,
+  PluginTransformResultArgs,
+  RootOperationNode,
+  QueryResult,
+  UnknownRow,
+} from 'kysely'
 import SqliteDB from 'better-sqlite3'
 import { Pool as PgPool, Client as PgClient, types as pgTypes } from 'pg'
 import EventEmitter from 'events'
 import TypedEmitter from 'typed-emitter'
+import { wait } from '@atproto/common'
 import DatabaseSchema, { DatabaseSchemaType } from './database-schema'
 import { dummyDialect } from './util'
 import * as migrations from './migrations'
@@ -11,6 +24,7 @@ import { CtxMigrationProvider } from './migrations/provider'
 import { dbLogger as log } from '../logger'
 
 export class Database {
+  txEvt = new EventEmitter() as TxnEmitter
   txChannelMsgs: ChannelMsg[] = []
   channels: Channels
   migrator: Migrator
@@ -45,23 +59,30 @@ export class Database {
   static postgres(opts: PgOptions): Database {
     const { schema, url } = opts
     const pool =
-      opts.pool ?? new PgPool({ connectionString: url, max: opts.poolSize })
+      opts.pool ??
+      new PgPool({
+        connectionString: url,
+        max: opts.poolSize,
+        maxUses: opts.poolMaxUses,
+        idleTimeoutMillis: opts.poolIdleTimeoutMs,
+      })
 
     // Select count(*) and other pg bigints as js integer
     pgTypes.setTypeParser(pgTypes.builtins.INT8, (n) => parseInt(n, 10))
 
     // Setup schema usage, primarily for test parallelism (each test suite runs in its own pg schema)
-    if (schema !== undefined) {
-      if (!/^[a-z_]+$/i.test(schema)) {
-        throw new Error(
-          `Postgres schema must only contain [A-Za-z_]: ${schema}`,
-        )
-      }
-      pool.on('connect', (client) => {
-        // Shared objects such as extensions will go in the public schema
-        client.query(`SET search_path TO "${schema}",public`)
-      })
+    if (schema && !/^[a-z_]+$/i.test(schema)) {
+      throw new Error(`Postgres schema must only contain [A-Za-z_]: ${schema}`)
     }
+
+    pool.on('connect', (client) => {
+      // Used for trigram indexes, e.g. on actor search
+      client.query('SET pg_trgm.strict_word_similarity_threshold TO .1;')
+      if (schema) {
+        // Shared objects such as extensions will go in the public schema
+        client.query(`SET search_path TO "${schema}",public;`)
+      }
+    })
 
     const db = new Kysely<DatabaseSchemaType>({
       dialect: new PostgresDialect({ pool }),
@@ -113,6 +134,11 @@ export class Database {
     }
   }
 
+  onCommit(fn: () => void) {
+    this.assertTransaction()
+    this.txEvt.once('commit', fn)
+  }
+
   private getSchemaChannel(channel: string) {
     if (this.cfg.dialect === 'pg' && this.cfg.schema) {
       return this.cfg.schema + '_' + channel
@@ -148,16 +174,26 @@ export class Database {
 
   async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
     let txMsgs: ChannelMsg[] = []
-    const res = await this.db.transaction().execute(async (txn) => {
-      const dbTxn = new Database(txn, this.cfg, this.channels)
-      const txRes = await fn(dbTxn)
-      txMsgs = dbTxn.txChannelMsgs
-      return txRes
-    })
-    txMsgs.forEach((msg) => {
-      this.sendChannelMsg(msg)
-    })
-    return res
+    const leakyTxPlugin = new LeakyTxPlugin()
+    const { dbTxn, txRes } = await this.db
+      .withPlugin(leakyTxPlugin)
+      .transaction()
+      .execute(async (txn) => {
+        const dbTxn = new Database(txn, this.cfg, this.channels)
+        const txRes = await fn(dbTxn)
+          .catch(async (err) => {
+            leakyTxPlugin.endTx()
+            // ensure that all in-flight queries are flushed & the connection is open
+            await dbTxn.db.getExecutor().provideConnection(async () => {})
+            throw err
+          })
+          .finally(() => leakyTxPlugin.endTx())
+        txMsgs = dbTxn.txChannelMsgs
+        return { txRes, dbTxn }
+      })
+    dbTxn?.txEvt.emit('commit')
+    txMsgs.forEach((msg) => this.sendChannelMsg(msg))
+    return txRes
   }
 
   get schema(): string | undefined {
@@ -176,6 +212,10 @@ export class Database {
     assert(this.isTransaction, 'Transaction required')
   }
 
+  assertNotTransaction() {
+    assert(!this.isTransaction, 'Cannot be in a transaction')
+  }
+
   async close(): Promise<void> {
     if (this.destroyed) return
     if (this.channelClient) {
@@ -186,7 +226,7 @@ export class Database {
   }
 
   async migrateToOrThrow(migration: string) {
-    if (this.schema !== undefined) {
+    if (this.schema) {
       await this.db.schema.createSchema(this.schema).ifNotExists().execute()
     }
     const { error, results } = await this.migrator.migrateTo(migration)
@@ -200,7 +240,7 @@ export class Database {
   }
 
   async migrateToLatestOrThrow() {
-    if (this.schema !== undefined) {
+    if (this.schema) {
       await this.db.schema.createSchema(this.schema).ifNotExists().execute()
     }
     const { error, results } = await this.migrator.migrateToLatest()
@@ -211,6 +251,54 @@ export class Database {
       throw new Error('An unknown failure occurred while migrating')
     }
     return results
+  }
+
+  async maintainMaterializedViews(opts: {
+    views: string[]
+    intervalSec: number
+    signal: AbortSignal
+  }) {
+    assert(
+      this.dialect === 'pg',
+      'Can only maintain materialized views on postgres',
+    )
+    const { views, intervalSec, signal } = opts
+    while (!signal.aborted) {
+      // super basic synchronization by agreeing when the intervals land relative to unix timestamp
+      const now = Date.now()
+      const intervalMs = 1000 * intervalSec
+      const nextIteration = Math.ceil(now / intervalMs)
+      const nextInMs = nextIteration * intervalMs - now
+      await wait(nextInMs)
+      if (signal.aborted) break
+      await Promise.all(
+        views.map(async (view) => {
+          try {
+            await this.refreshMaterializedView(view)
+            log.info(
+              { view, time: new Date().toISOString() },
+              'materialized view refreshed',
+            )
+          } catch (err) {
+            log.error(
+              { view, err, time: new Date().toISOString() },
+              'materialized view refresh failed',
+            )
+          }
+        }),
+      )
+    }
+  }
+
+  async refreshMaterializedView(view: string) {
+    assert(
+      this.dialect === 'pg',
+      'Can only maintain materialized views on postgres',
+    )
+    const { ref } = this.db.dynamic
+    await sql`refresh materialized view concurrently ${ref(view)}`.execute(
+      this.db,
+    )
   }
 }
 
@@ -239,6 +327,8 @@ type PgOptions = {
   pool?: PgPool
   schema?: string
   poolSize?: number
+  poolMaxUses?: number
+  poolIdleTimeoutMs?: number
 }
 
 type ChannelEvents = {
@@ -247,8 +337,35 @@ type ChannelEvents = {
 
 type ChannelEmitter = TypedEmitter<ChannelEvents>
 
+type TxnEvents = {
+  commit: () => void
+}
+
+type TxnEmitter = TypedEmitter<TxnEvents>
+
 type ChannelMsg = 'repo_seq'
 
 type Channels = {
   repo_seq: ChannelEmitter
+}
+
+class LeakyTxPlugin implements KyselyPlugin {
+  private txOver: boolean
+
+  endTx() {
+    this.txOver = true
+  }
+
+  transformQuery(args: PluginTransformQueryArgs): RootOperationNode {
+    if (this.txOver) {
+      throw new Error('tx already failed')
+    }
+    return args.node
+  }
+
+  async transformResult(
+    args: PluginTransformResultArgs,
+  ): Promise<QueryResult<UnknownRow>> {
+    return args.result
+  }
 }

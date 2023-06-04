@@ -12,20 +12,24 @@ export class XrpcStreamServer {
     this.wss.on('connection', async (socket, req) => {
       socket.on('error', (err) => logger.error(err, 'websocket error'))
       try {
-        const iterator = unwrapIterator(handler(req, socket, this))
-        socket.once('close', () => iterator.return?.())
+        const ac = new AbortController()
+        const iterator = unwrapIterator(handler(req, ac.signal, socket, this))
+        socket.once('close', () => {
+          iterator.return?.()
+          ac.abort()
+        })
         const safeFrames = wrapIterator(iterator)
         for await (const frame of safeFrames) {
-          if (frame instanceof ErrorFrame) {
-            await new Promise((res, rej) => {
-              socket.send(frame.toBytes(), { binary: true }, (err) => {
-                if (err) return rej(err)
-                res(undefined)
-              })
+          await new Promise((res, rej) => {
+            socket.send(frame.toBytes(), { binary: true }, (err) => {
+              // @TODO this callback may give more aggressive on backpressure than
+              // we ultimately want, but trying it out for the time being.
+              if (err) return rej(err)
+              res(undefined)
             })
+          })
+          if (frame instanceof ErrorFrame) {
             throw new DisconnectError(CloseCode.Policy, frame.body.error)
-          } else {
-            socket.send(frame.toBytes(), { binary: true })
           }
         }
       } catch (err) {
@@ -43,6 +47,7 @@ export class XrpcStreamServer {
 
 export type Handler = (
   req: IncomingMessage,
+  signal: AbortSignal,
   socket: WebSocket,
   server: XrpcStreamServer,
 ) => AsyncIterable<Frame>

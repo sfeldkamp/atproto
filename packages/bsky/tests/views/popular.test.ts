@@ -1,12 +1,11 @@
 import AtpAgent from '@atproto/api'
-import { runTestServer, CloseFn, processAll, TestServerInfo } from '../_util'
+import { TestNetwork } from '@atproto/dev-env'
 import { SeedClient } from '../seeds/client'
 import basicSeed from '../seeds/basic'
 
 describe('popular views', () => {
-  let server: TestServerInfo
+  let network: TestNetwork
   let agent: AtpAgent
-  let close: CloseFn
   let sc: SeedClient
 
   // account dids, for convenience
@@ -23,12 +22,11 @@ describe('popular views', () => {
   }
 
   beforeAll(async () => {
-    server = await runTestServer({
-      dbPostgresSchema: 'views_popular',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_views_popular',
     })
-    close = server.close
-    agent = new AtpAgent({ service: server.url })
-    const pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    agent = network.bsky.getClient()
+    const pdsAgent = network.pds.getClient()
     sc = new SeedClient(pdsAgent)
     await basicSeed(sc)
     await sc.createAccount('eve', {
@@ -43,7 +41,7 @@ describe('popular views', () => {
       handle: 'frank.test',
       password: 'frank-pass',
     })
-    await processAll(server)
+    await network.processAll()
     alice = sc.dids.alice
     bob = sc.dids.bob
     carol = sc.dids.carol
@@ -53,7 +51,7 @@ describe('popular views', () => {
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
 
   it('returns well liked posts', async () => {
@@ -80,11 +78,11 @@ describe('popular views', () => {
     await sc.like(dan, three.ref)
     await sc.like(eve, three.ref)
     await sc.like(frank, three.ref)
-    await processAll(server)
+    await network.processAll()
 
     const res = await agent.api.app.bsky.unspecced.getPopular(
       {},
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
     const feedUris = res.data.feed.map((i) => i.post.uri).sort()
     const expected = [one.ref.uriStr, two.ref.uriStr, three.ref.uriStr].sort()

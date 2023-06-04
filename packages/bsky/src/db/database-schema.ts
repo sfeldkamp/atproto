@@ -12,6 +12,10 @@ import * as subscription from './tables/subscription'
 import * as actor from './tables/actor'
 import * as actorSync from './tables/actor-sync'
 import * as record from './tables/record'
+import * as notification from './tables/notification'
+import * as didCache from './tables/did-cache'
+import * as moderation from './tables/moderation'
+import * as label from './tables/label'
 
 export type DatabaseSchemaType = duplicateRecord.PartialDB &
   profile.PartialDB &
@@ -25,7 +29,11 @@ export type DatabaseSchemaType = duplicateRecord.PartialDB &
   subscription.PartialDB &
   actor.PartialDB &
   actorSync.PartialDB &
-  record.PartialDB
+  record.PartialDB &
+  notification.PartialDB &
+  didCache.PartialDB &
+  moderation.PartialDB &
+  label.PartialDB
 
 export type DatabaseSchema = Kysely<DatabaseSchemaType>
 

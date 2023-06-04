@@ -1,6 +1,6 @@
 import * as crypto from '@atproto/crypto'
 import { AuthRequiredError, InvalidRequestError } from '@atproto/xrpc-server'
-import * as uint8arrays from 'uint8arrays'
+import * as ui8 from 'uint8arrays'
 import express from 'express'
 import * as jwt from 'jsonwebtoken'
 import AppContext from './context'
@@ -12,16 +12,18 @@ const BASIC = 'Basic '
 export type ServerAuthOpts = {
   jwtSecret: string
   adminPass: string
+  moderatorPass?: string
 }
 
 // @TODO sync-up with current method names, consider backwards compat.
-export enum AuthScopes {
+export enum AuthScope {
   Access = 'com.atproto.access',
   Refresh = 'com.atproto.refresh',
+  AppPass = 'com.atproto.appPass',
 }
 
 export type AuthToken = {
-  scope: AuthScopes
+  scope: AuthScope
   sub: string
   exp: number
 }
@@ -31,72 +33,95 @@ export type RefreshToken = AuthToken & { jti: string }
 export class ServerAuth {
   private _secret: string
   private _adminPass: string
+  private _moderatorPass?: string
 
   constructor(opts: ServerAuthOpts) {
     this._secret = opts.jwtSecret
     this._adminPass = opts.adminPass
+    this._moderatorPass = opts.moderatorPass
   }
 
-  createAccessToken(did: string, expiresIn?: string | number) {
+  createAccessToken(opts: {
+    did: string
+    scope?: AuthScope
+    expiresIn?: string | number
+  }) {
+    const { did, scope = AuthScope.Access, expiresIn = '120mins' } = opts
     const payload = {
-      scope: AuthScopes.Access,
+      scope,
       sub: did,
     }
     return {
       payload: payload as AuthToken, // exp set by sign()
       jwt: jwt.sign(payload, this._secret, {
-        expiresIn: expiresIn ?? '120mins',
+        expiresIn: expiresIn,
         mutatePayload: true,
       }),
     }
   }
 
-  createRefreshToken(did: string, jti?: string, expiresIn?: string | number) {
+  createRefreshToken(opts: {
+    did: string
+    jti?: string
+    expiresIn?: string | number
+  }) {
+    const { did, jti = getRefreshTokenId(), expiresIn = '90days' } = opts
     const payload = {
-      scope: AuthScopes.Refresh,
+      scope: AuthScope.Refresh,
       sub: did,
-      jti: jti ?? getRefreshTokenId(),
+      jti,
     }
     return {
       payload: payload as RefreshToken, // exp set by sign()
       jwt: jwt.sign(payload, this._secret, {
-        expiresIn: expiresIn ?? '90days',
+        expiresIn: expiresIn,
         mutatePayload: true,
       }),
     }
   }
 
-  getUserDid(req: express.Request, scope = AuthScopes.Access): string | null {
+  getCredentials(
+    req: express.Request,
+    scopes = [AuthScope.Access],
+  ): { did: string; scope: AuthScope } | null {
     const token = this.getToken(req)
     if (!token) return null
-    const payload = this.verifyToken(token, scope)
+    const payload = this.verifyToken(token, scopes)
     const sub = payload.sub
     if (typeof sub !== 'string' || !sub.startsWith('did:')) {
       throw new InvalidRequestError('Malformed token', 'InvalidToken')
     }
-    return sub
+    return { did: sub, scope: payload.scope }
   }
 
-  getUserDidOrThrow(req: express.Request, scope?: AuthScopes): string {
-    const did = this.getUserDid(req, scope)
-    if (did === null) {
+  getCredentialsOrThrow(
+    req: express.Request,
+    scopes: AuthScope[],
+  ): { did: string; scope: AuthScope } {
+    const creds = this.getCredentials(req, scopes)
+    if (creds === null) {
       throw new AuthRequiredError()
     }
-    return did
+    return creds
   }
 
-  verifyUser(req: express.Request, did: string, scope?: AuthScopes): boolean {
-    const authorized = this.getUserDid(req, scope)
-    return authorized === did
+  verifyUser(req: express.Request, did: string, scopes: AuthScope[]): boolean {
+    const authorized = this.getCredentials(req, scopes)
+    return authorized !== null && authorized.did === did
   }
 
-  verifyAdmin(req: express.Request): boolean {
+  verifyAdmin(req: express.Request) {
     const parsed = parseBasicAuth(req.headers.authorization || '')
-    if (!parsed) return false
+    if (!parsed) {
+      return { admin: false, moderator: false }
+    }
     const { username, password } = parsed
-    if (username !== 'admin') return false
-    if (password !== this._adminPass) return false
-    return true
+    if (username !== 'admin') {
+      return { admin: false, moderator: false }
+    }
+    const admin = password === this._adminPass
+    const moderator = admin || password === this._moderatorPass
+    return { admin, moderator }
   }
 
   getToken(req: express.Request) {
@@ -105,13 +130,17 @@ export class ServerAuth {
     return header.slice(BEARER.length)
   }
 
-  verifyToken(token: string, scope?: AuthScopes, options?: jwt.VerifyOptions) {
+  verifyToken(
+    token: string,
+    scopes: AuthScope[],
+    options?: jwt.VerifyOptions,
+  ): jwt.JwtPayload {
     try {
       const payload = jwt.verify(token, this._secret, options)
       if (typeof payload === 'string' || 'signature' in payload) {
         throw new InvalidRequestError('Malformed token', 'InvalidToken')
       }
-      if (scope && payload.scope !== scope) {
+      if (scopes.length > 0 && !scopes.includes(payload.scope)) {
         throw new InvalidRequestError('Bad token scope', 'InvalidToken')
       }
       return payload
@@ -138,9 +167,7 @@ export const parseBasicAuth = (
   const b64 = token.slice(BASIC.length)
   let parsed: string[]
   try {
-    parsed = uint8arrays
-      .toString(uint8arrays.fromString(b64, 'base64pad'), 'utf8')
-      .split(':')
+    parsed = ui8.toString(ui8.fromString(b64, 'base64pad'), 'utf8').split(':')
   } catch (err) {
     return null
   }
@@ -152,11 +179,22 @@ export const parseBasicAuth = (
 export const accessVerifier =
   (auth: ServerAuth) =>
   async (ctx: { req: express.Request; res: express.Response }) => {
+    const creds = auth.getCredentialsOrThrow(ctx.req, [
+      AuthScope.Access,
+      AuthScope.AppPass,
+    ])
     return {
-      credentials: {
-        did: auth.getUserDidOrThrow(ctx.req, AuthScopes.Access),
-        scope: AuthScopes.Access,
-      },
+      credentials: creds,
+      artifacts: auth.getToken(ctx.req),
+    }
+  }
+
+export const accessVerifierNotAppPassword =
+  (auth: ServerAuth) =>
+  async (ctx: { req: express.Request; res: express.Response }) => {
+    const creds = auth.getCredentialsOrThrow(ctx.req, [AuthScope.Access])
+    return {
+      credentials: creds,
       artifacts: auth.getToken(ctx.req),
     }
   }
@@ -164,8 +202,11 @@ export const accessVerifier =
 export const accessVerifierCheckTakedown =
   (auth: ServerAuth, { db, services }: AppContext) =>
   async (ctx: { req: express.Request; res: express.Response }) => {
-    const did = auth.getUserDidOrThrow(ctx.req, AuthScopes.Access)
-    const actor = await services.account(db).getAccount(did, true)
+    const creds = auth.getCredentialsOrThrow(ctx.req, [
+      AuthScope.Access,
+      AuthScope.AppPass,
+    ])
+    const actor = await services.account(db).getAccount(creds.did, true)
     if (!actor || softDeleted(actor)) {
       throw new AuthRequiredError(
         'Account has been taken down',
@@ -173,10 +214,7 @@ export const accessVerifierCheckTakedown =
       )
     }
     return {
-      credentials: {
-        did,
-        scope: AuthScopes.Access,
-      },
+      credentials: creds,
       artifacts: auth.getToken(ctx.req),
     }
   }
@@ -184,11 +222,9 @@ export const accessVerifierCheckTakedown =
 export const refreshVerifier =
   (auth: ServerAuth) =>
   async (ctx: { req: express.Request; res: express.Response }) => {
+    const creds = auth.getCredentialsOrThrow(ctx.req, [AuthScope.Refresh])
     return {
-      credentials: {
-        did: auth.getUserDidOrThrow(ctx.req, AuthScopes.Refresh),
-        scope: AuthScopes.Refresh,
-      },
+      credentials: creds,
       artifacts: auth.getToken(ctx.req),
     }
   }
@@ -196,13 +232,23 @@ export const refreshVerifier =
 export const adminVerifier =
   (auth: ServerAuth) =>
   async (ctx: { req: express.Request; res: express.Response }) => {
-    const admin = auth.verifyAdmin(ctx.req)
-    if (!admin) {
+    const credentials = auth.verifyAdmin(ctx.req)
+    if (!credentials.admin) {
       throw new AuthRequiredError()
     }
-    return { credentials: { admin } }
+    return { credentials }
+  }
+
+export const moderatorVerifier =
+  (auth: ServerAuth) =>
+  async (ctx: { req: express.Request; res: express.Response }) => {
+    const credentials = auth.verifyAdmin(ctx.req)
+    if (!credentials.moderator) {
+      throw new AuthRequiredError()
+    }
+    return { credentials }
   }
 
 export const getRefreshTokenId = () => {
-  return uint8arrays.toString(crypto.randomBytes(32), 'base64')
+  return ui8.toString(crypto.randomBytes(32), 'base64')
 }

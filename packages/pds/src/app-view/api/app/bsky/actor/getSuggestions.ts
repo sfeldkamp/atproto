@@ -1,26 +1,25 @@
-import { InvalidRequestError } from '@atproto/xrpc-server'
 import AppContext from '../../../../../context'
-import { Cursor, GenericKeyset, paginate } from '../../../../../db/pagination'
-import { countAll, notSoftDeletedClause } from '../../../../../db/util'
+import { notSoftDeletedClause } from '../../../../../db/util'
 import { Server } from '../../../../../lexicon'
 
 export default function (server: Server, ctx: AppContext) {
   server.app.bsky.actor.getSuggestions({
     auth: ctx.accessVerifier,
     handler: async ({ params, auth }) => {
-      let { limit } = params
-      const { cursor } = params
+      const { limit, cursor } = params
       const requester = auth.credentials.did
-      limit = Math.min(limit ?? 25, 100)
 
       const db = ctx.db.db
       const { services } = ctx
       const { ref } = db.dynamic
 
-      const suggestionsQb = db
-        .selectFrom('user_account')
-        .innerJoin('did_handle', 'user_account.did', 'did_handle.did')
+      const graphService = ctx.services.appView.graph(ctx.db)
+
+      let suggestionsQb = db
+        .selectFrom('suggested_follow')
+        .innerJoin('did_handle', 'suggested_follow.did', 'did_handle.did')
         .innerJoin('repo_root', 'repo_root.did', 'did_handle.did')
+        .innerJoin('profile_agg', 'profile_agg.did', 'did_handle.did')
         .where(notSoftDeletedClause(ref('repo_root')))
         .where('did_handle.did', '!=', requester)
         .whereNotExists((qb) =>
@@ -30,34 +29,35 @@ export default function (server: Server, ctx: AppContext) {
             .where('creator', '=', requester)
             .whereRef('subjectDid', '=', ref('did_handle.did')),
         )
-        .selectAll('did_handle')
-        .select(
-          db
-            .selectFrom('post')
-            .whereRef('creator', '=', ref('did_handle.did'))
-            .select(countAll.as('count'))
-            .as('postCount'),
+        .whereNotExists(
+          graphService.blockQb(requester, [ref('did_handle.did')]),
         )
+        .selectAll('did_handle')
+        .select('profile_agg.postsCount as postsCount')
+        .limit(limit)
+        .orderBy('suggested_follow.order', 'asc')
 
-      // PG doesn't let you do WHEREs on aliases, so we wrap it in a subquery
-      let suggestionsReq = db
-        .selectFrom(suggestionsQb.as('suggestions'))
-        .selectAll()
+      if (cursor) {
+        const cursorRow = await db
+          .selectFrom('suggested_follow')
+          .where('did', '=', cursor)
+          .selectAll()
+          .executeTakeFirst()
+        if (cursorRow) {
+          suggestionsQb = suggestionsQb.where(
+            'suggested_follow.order',
+            '>',
+            cursorRow.order,
+          )
+        }
+      }
 
-      const keyset = new PostCountDidKeyset(ref('postCount'), ref('did'))
-      suggestionsReq = paginate(suggestionsReq, {
-        limit,
-        cursor,
-        keyset,
-        direction: 'desc',
-      })
-
-      const suggestionsRes = await suggestionsReq.execute()
+      const suggestionsRes = await suggestionsQb.execute()
 
       return {
         encoding: 'application/json',
         body: {
-          cursor: keyset.packFromResult(suggestionsRes),
+          cursor: suggestionsRes.at(-1)?.did,
           actors: await services.appView
             .actor(ctx.db)
             .views.profile(suggestionsRes, requester),
@@ -65,32 +65,4 @@ export default function (server: Server, ctx: AppContext) {
       }
     },
   })
-}
-
-type PostCountDidResult = { postCount: number; did: string }
-type PostCountDidLabeledResult = { primary: number; secondary: string }
-
-export class PostCountDidKeyset extends GenericKeyset<
-  PostCountDidResult,
-  PostCountDidLabeledResult
-> {
-  labelResult(result: PostCountDidResult): PostCountDidLabeledResult {
-    return { primary: result.postCount, secondary: result.did }
-  }
-  labeledResultToCursor(labeled: PostCountDidLabeledResult) {
-    return {
-      primary: labeled.primary.toString(),
-      secondary: labeled.secondary,
-    }
-  }
-  cursorToLabeledResult(cursor: Cursor) {
-    const parsed = parseInt(cursor.primary)
-    if (isNaN(parsed)) {
-      throw new InvalidRequestError('Malformed cursor')
-    }
-    return {
-      primary: parsed,
-      secondary: cursor.secondary,
-    }
-  }
 }

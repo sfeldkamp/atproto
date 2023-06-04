@@ -1,18 +1,12 @@
 import AtpAgent from '@atproto/api'
-import {
-  runTestServer,
-  forSnapshot,
-  CloseFn,
-  paginateAll,
-  processAll,
-  stripViewer,
-} from '../_util'
+import { TestNetwork } from '@atproto/dev-env'
+import { forSnapshot, paginateAll, stripViewer } from '../_util'
 import { SeedClient } from '../seeds/client'
 import repostsSeed from '../seeds/reposts'
 
 describe('pds repost views', () => {
+  let network: TestNetwork
   let agent: AtpAgent
-  let close: CloseFn
   let sc: SeedClient
 
   // account dids, for convenience
@@ -20,27 +14,26 @@ describe('pds repost views', () => {
   let bob: string
 
   beforeAll(async () => {
-    const server = await runTestServer({
-      dbPostgresSchema: 'views_reposts',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_views_reposts',
     })
-    close = server.close
-    agent = new AtpAgent({ service: server.url })
-    const pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    agent = network.bsky.getClient()
+    const pdsAgent = network.pds.getClient()
     sc = new SeedClient(pdsAgent)
     await repostsSeed(sc)
-    await processAll(server)
+    await network.processAll()
     alice = sc.dids.alice
     bob = sc.dids.bob
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
 
   it('fetches reposted-by for a post', async () => {
     const view = await agent.api.app.bsky.feed.getRepostedBy(
       { uri: sc.posts[alice][2].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
     expect(view.data.uri).toEqual(sc.posts[sc.dids.alice][2].ref.uriStr)
     expect(forSnapshot(view.data.repostedBy)).toMatchSnapshot()
@@ -49,7 +42,7 @@ describe('pds repost views', () => {
   it('fetches reposted-by for a reply', async () => {
     const view = await agent.api.app.bsky.feed.getRepostedBy(
       { uri: sc.replies[bob][0].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
     expect(view.data.uri).toEqual(sc.replies[sc.dids.bob][0].ref.uriStr)
     expect(forSnapshot(view.data.repostedBy)).toMatchSnapshot()
@@ -64,7 +57,7 @@ describe('pds repost views', () => {
           cursor,
           limit: 2,
         },
-        { headers: sc.getHeaders(alice, true) },
+        { headers: await network.serviceHeaders(alice) },
       )
       return res.data
     }
@@ -76,7 +69,7 @@ describe('pds repost views', () => {
 
     const full = await agent.api.app.bsky.feed.getRepostedBy(
       { uri: sc.posts[alice][2].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
 
     expect(full.data.repostedBy.length).toEqual(4)
@@ -86,7 +79,7 @@ describe('pds repost views', () => {
   it('fetches reposted-by unauthed', async () => {
     const { data: authed } = await agent.api.app.bsky.feed.getRepostedBy(
       { uri: sc.posts[alice][2].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
     const { data: unauthed } = await agent.api.app.bsky.feed.getRepostedBy({
       uri: sc.posts[alice][2].ref.uriStr,

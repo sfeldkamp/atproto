@@ -29,6 +29,7 @@ import {
   XRPCStreamHandlerConfig,
   XRPCStreamHandler,
   Params,
+  InternalServerError,
 } from './types'
 import {
   decodeQueryParams,
@@ -218,6 +219,12 @@ export class Server {
         if (!outputUnvalidated || isHandlerSuccess(outputUnvalidated)) {
           // validate response
           const output = validateResOutput(outputUnvalidated)
+          // set headers
+          if (output?.headers) {
+            Object.entries(output.headers).forEach(([name, val]) => {
+              res.header(name, val)
+            })
+          }
           // send response
           if (
             output?.encoding === 'application/json' ||
@@ -244,7 +251,14 @@ export class Server {
           }
         }
       } catch (err: unknown) {
-        next(err)
+        // Express will not call the next middleware (errorMiddleware in this case)
+        // if the value passed to next is falsy (e.g. null, undefined, 0).
+        // Hence we replace it with an InternalServerError.
+        if (!err) {
+          next(new InternalServerError())
+        } else {
+          next(err)
+        }
       }
     }
   }
@@ -260,7 +274,7 @@ export class Server {
       nsid,
       new XrpcStreamServer({
         noServer: true,
-        handler: async function* (req) {
+        handler: async function* (req, signal) {
           try {
             // authenticate request
             const auth = await config.auth?.({ req })
@@ -275,7 +289,7 @@ export class Server {
               throw new InvalidRequestError(String(e))
             }
             // stream
-            const items = config.handler({ req, params, auth })
+            const items = config.handler({ req, params, auth, signal })
             for await (const item of items) {
               if (item instanceof Frame) {
                 yield item

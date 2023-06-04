@@ -3,7 +3,7 @@ import AtpAgent, {
   ComAtprotoServerCreateAccount,
   ComAtprotoServerResetPassword,
 } from '@atproto/api'
-import { DidResolver } from '@atproto/did-resolver'
+import { IdResolver } from '@atproto/identity'
 import * as crypto from '@atproto/crypto'
 import Mail from 'nodemailer/lib/mailer'
 import { AppContext, Database } from '../src'
@@ -40,7 +40,7 @@ describe('account', () => {
   let close: util.CloseFn
   let mailer: ServerMailer
   let db: Database
-  let didResolver: DidResolver
+  let idResolver: IdResolver
   const mailCatcher = new EventEmitter()
   let _origSendMail
 
@@ -58,7 +58,7 @@ describe('account', () => {
     ctx = server.ctx
     serverUrl = server.url
     repoSigningKey = server.ctx.repoSigningKey.did()
-    didResolver = new DidResolver({ plcUrl: ctx.cfg.didPlcUrl })
+    idResolver = new IdResolver({ plcUrl: ctx.cfg.didPlcUrl })
     agent = new AtpAgent({ service: serverUrl })
 
     // Catch emails for use in tests
@@ -82,10 +82,10 @@ describe('account', () => {
   it('creates an invite code', async () => {
     inviteCode = await createInviteCode(agent, 1)
     const split = inviteCode.split('-')
-    const host = split.slice(0, -1).join('.')
-    const code = split.at(-1)
+    const host = split.slice(0, -2).join('.')
+    const code = split.slice(-2).join('-')
     expect(host).toBe('pds.public.url') // Hostname of public url
-    expect(code?.length).toBe(7)
+    expect(code.length).toBe(11)
   })
 
   it('serves the accounts system config', async () => {
@@ -140,7 +140,7 @@ describe('account', () => {
   })
 
   it('generates a properly formatted PLC DID', async () => {
-    const didData = await didResolver.resolveAtpData(did)
+    const didData = await idResolver.did.resolveAtprotoData(did)
 
     expect(didData.did).toBe(did)
     expect(didData.handle).toBe(handle)
@@ -166,6 +166,104 @@ describe('account', () => {
       ctx.cfg.recoveryKey,
       ctx.plcRotationKey.did(),
     ])
+  })
+
+  it('allows a user to bring their own DID', async () => {
+    const inviteCode = await createInviteCode(agent, 1)
+    const userKey = await crypto.Secp256k1Keypair.create()
+    const handle = 'byo-did.test'
+    const did = await ctx.plcClient.createDid({
+      signingKey: ctx.repoSigningKey.did(),
+      handle,
+      rotationKeys: [
+        userKey.did(),
+        ctx.cfg.recoveryKey,
+        ctx.plcRotationKey.did(),
+      ],
+      pds: ctx.cfg.publicUrl,
+      signer: userKey,
+    })
+
+    const res = await agent.api.com.atproto.server.createAccount({
+      email: 'byo-did@test.com',
+      handle,
+      did,
+      password: 'byo-did-pass',
+      inviteCode,
+    })
+
+    expect(res.data.handle).toEqual(handle)
+    expect(res.data.did).toEqual(did)
+  })
+
+  it('requires that the did a user brought be correctly set up for the server', async () => {
+    const inviteCode = await createInviteCode(agent, 1)
+    const userKey = await crypto.Secp256k1Keypair.create()
+    const baseDidInfo = {
+      signingKey: ctx.repoSigningKey.did(),
+      handle: 'byo-did.test',
+      rotationKeys: [
+        userKey.did(),
+        ctx.cfg.recoveryKey,
+        ctx.plcRotationKey.did(),
+      ],
+      pds: ctx.cfg.publicUrl,
+      signer: userKey,
+    }
+    const baseAccntInfo = {
+      email: 'byo-did@test.com',
+      handle: 'byo-did.test',
+      password: 'byo-did-pass',
+      inviteCode,
+    }
+
+    const did1 = await ctx.plcClient.createDid({
+      ...baseDidInfo,
+      handle: 'different-handle.test',
+    })
+    const attempt1 = agent.api.com.atproto.server.createAccount({
+      ...baseAccntInfo,
+      did: did1,
+    })
+    await expect(attempt1).rejects.toThrow(
+      'provided handle does not match DID document handle',
+    )
+
+    const did2 = await ctx.plcClient.createDid({
+      ...baseDidInfo,
+      pds: 'https://other-pds.com',
+    })
+    const attempt2 = agent.api.com.atproto.server.createAccount({
+      ...baseAccntInfo,
+      did: did2,
+    })
+    await expect(attempt2).rejects.toThrow(
+      'DID document pds endpoint does not match service endpoint',
+    )
+
+    const did3 = await ctx.plcClient.createDid({
+      ...baseDidInfo,
+      rotationKeys: [userKey.did()],
+    })
+    const attempt3 = agent.api.com.atproto.server.createAccount({
+      ...baseAccntInfo,
+      did: did3,
+    })
+    await expect(attempt3).rejects.toThrow(
+      'PLC DID does not include service rotation key',
+    )
+
+    const did4 = await ctx.plcClient.createDid({
+      ...baseDidInfo,
+      signingKey: userKey.did(),
+    })
+    const attempt4 = agent.api.com.atproto.server.createAccount({
+      ...baseAccntInfo,
+      did: did4,
+    })
+    await expect(attempt4).rejects.toThrow(
+      'DID document signing key does not match service signing key',
+    )
   })
 
   it('allows administrative email updates', async () => {
@@ -196,6 +294,20 @@ describe('account', () => {
 
     const accnt2 = await ctx.services.account(ctx.db).getAccount(handle)
     expect(accnt2?.email).toBe(email)
+  })
+
+  it('disallows non-admin moderators to perform email updates', async () => {
+    const attemptUpdate = agent.api.com.atproto.admin.updateAccountEmail(
+      {
+        account: handle,
+        email: 'new@email.com',
+      },
+      {
+        encoding: 'application/json',
+        headers: { authorization: util.moderatorAuth() },
+      },
+    )
+    await expect(attemptUpdate).rejects.toThrow('Authentication Required')
   })
 
   it('disallows duplicate email addresses and handles', async () => {
@@ -380,7 +492,7 @@ describe('account', () => {
   }
 
   const getTokenFromMail = (mail: Mail.Options) =>
-    mail.html?.toString().match(/>(\d{6})</)?.[1]
+    mail.html?.toString().match(/>([a-z0-9]{5}-[a-z0-9]{5})</i)?.[1]
 
   it('can reset account password', async () => {
     const mail = await getMailFrom(
@@ -451,6 +563,38 @@ describe('account', () => {
         password,
       }),
     ).resolves.toBeDefined()
+  })
+
+  it('changing password invalidates past refresh tokens', async () => {
+    const mail = await getMailFrom(
+      agent.api.com.atproto.server.requestPasswordReset({ email }),
+    )
+
+    expect(mail.to).toEqual(email)
+    expect(mail.html).toContain('Reset your password')
+    expect(mail.html).toContain('alice.test')
+
+    const token = getTokenFromMail(mail)
+
+    if (token === undefined) {
+      return expect(token).toBeDefined()
+    }
+
+    const session = await agent.api.com.atproto.server.createSession({
+      identifier: handle,
+      password,
+    })
+
+    await agent.api.com.atproto.server.resetPassword({
+      token: token.toLowerCase(), // Reset should work case-insensitively
+      password,
+    })
+
+    await expect(
+      agent.api.com.atproto.server.refreshSession(undefined, {
+        headers: { authorization: `Bearer ${session.data.refreshJwt}` },
+      }),
+    ).rejects.toThrow('Token has been revoked')
   })
 
   it('allows only unexpired password reset tokens', async () => {
@@ -586,5 +730,38 @@ describe('account', () => {
       },
     )
     await expect(attempt).rejects.toThrow('cannot disable admin invite codes')
+  })
+
+  it('creates many invite codes', async () => {
+    const accounts = ['did:example:one', 'did:example:two', 'did:example:three']
+    const res = await agent.api.com.atproto.server.createInviteCodes(
+      {
+        useCount: 2,
+        codeCount: 2,
+        forAccounts: accounts,
+      },
+      {
+        headers: { authorization: util.adminAuth() },
+        encoding: 'application/json',
+      },
+    )
+    expect(res.data.codes.length).toBe(3)
+    const fromDb = await ctx.db.db
+      .selectFrom('invite_code')
+      .selectAll()
+      .where('forUser', 'in', accounts)
+      .execute()
+    expect(fromDb.length).toBe(6)
+    const dbCodesByUser = {}
+    for (const row of fromDb) {
+      expect(row.disabled).toBe(0)
+      expect(row.availableUses).toBe(2)
+      dbCodesByUser[row.forUser] ??= []
+      dbCodesByUser[row.forUser].push(row.code)
+    }
+    for (const { account, codes } of res.data.codes) {
+      expect(codes.length).toBe(2)
+      expect(codes.sort()).toEqual(dbCodesByUser[account].sort())
+    }
   })
 })

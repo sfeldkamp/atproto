@@ -1,37 +1,31 @@
 import AtpAgent from '@atproto/api'
 import { wait } from '@atproto/common'
-import {
-  runTestServer,
-  forSnapshot,
-  CloseFn,
-  paginateAll,
-  processAll,
-  stripViewer,
-} from '../_util'
+import { TestNetwork } from '@atproto/dev-env'
+import { TAKEDOWN } from '@atproto/api/src/client/types/com/atproto/admin/defs'
+import { forSnapshot, paginateAll, stripViewer } from '../_util'
 import { SeedClient } from '../seeds/client'
 import usersBulkSeed from '../seeds/users-bulk'
 
 describe('pds actor search views', () => {
+  let network: TestNetwork
   let agent: AtpAgent
-  let close: CloseFn
   let sc: SeedClient
   let headers: { [s: string]: string }
 
   beforeAll(async () => {
-    const server = await runTestServer({
-      dbPostgresSchema: 'views_actor_search',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_views_actor_search',
     })
-    close = server.close
-    agent = new AtpAgent({ service: server.url })
-    const pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    agent = network.bsky.getClient()
+    const pdsAgent = network.pds.getClient()
     sc = new SeedClient(pdsAgent)
 
     await wait(50) // allow pending sub to be established
-    await server.bsky.sub?.destroy()
+    await network.bsky.sub?.destroy()
     await usersBulkSeed(sc)
 
     // Skip did/handle resolution for expediency
-    const { db } = server.ctx
+    const { db } = network.bsky.ctx
     const now = new Date().toISOString()
     await db.db
       .insertInto('actor')
@@ -46,16 +40,14 @@ describe('pds actor search views', () => {
       .execute()
 
     // Process remaining profiles
-    server.bsky.sub?.resume()
-    await processAll(server, 20000)
-    headers = sc.getHeaders(Object.values(sc.dids)[0], true)
+    network.bsky.sub?.resume()
+    await network.processAll(50000)
+    headers = await network.serviceHeaders(Object.values(sc.dids)[0])
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
-
-  // @TODO(bsky) search blocks by actor takedown via labels.
 
   it('typeahead gives relevant results', async () => {
     const result = await agent.api.app.bsky.actor.searchActorsTypeahead(
@@ -222,5 +214,31 @@ describe('pds actor search views', () => {
     })
     expect(unauthed.actors.length).toBeGreaterThan(0)
     expect(unauthed.actors).toEqual(authed.actors.map(stripViewer))
+  })
+
+  it('search blocks by actor takedown', async () => {
+    await agent.api.com.atproto.admin.takeModerationAction(
+      {
+        action: TAKEDOWN,
+        subject: {
+          $type: 'com.atproto.admin.defs#repoRef',
+          did: sc.dids['cara-wiegand69.test'],
+        },
+        createdBy: 'did:example:admin',
+        reason: 'Y',
+      },
+      {
+        encoding: 'application/json',
+        headers: network.pds.adminAuthHeaders(),
+      },
+    )
+    const result = await agent.api.app.bsky.actor.searchActorsTypeahead(
+      { term: 'car' },
+      { headers },
+    )
+    const handles = result.data.actors.map((u) => u.handle)
+    expect(handles).toContain('carlos6.test')
+    expect(handles).toContain('carolina-mcdermott77.test')
+    expect(handles).not.toContain('cara-wiegand69.test')
   })
 })

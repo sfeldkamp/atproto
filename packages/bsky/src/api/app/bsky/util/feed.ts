@@ -3,11 +3,13 @@ import { TimeCidKeyset } from '../../../../db/pagination'
 import { FeedViewPost } from '../../../../lexicon/types/app/bsky/feed/defs'
 import { FeedService } from '../../../../services/feed'
 import { FeedRow } from '../../../../services/types'
+import { LabelService } from '../../../../services/label'
 
 // Present post and repost results into FeedViewPosts
 // Including links to embedded media
 export const composeFeed = async (
   feedService: FeedService,
+  labelService: LabelService,
   rows: FeedRow[],
   viewer: string | null,
 ): Promise<FeedViewPost[]> => {
@@ -26,26 +28,47 @@ export const composeFeed = async (
       actorDids.add(new AtUri(row.replyRoot).host)
     }
   }
-  const [actors, posts, embeds] = await Promise.all([
-    feedService.getActorViews(Array.from(actorDids), viewer),
+  const [actors, posts, embeds, labels] = await Promise.all([
+    feedService.getActorViews(Array.from(actorDids), viewer, {
+      skipLabels: true,
+    }),
     feedService.getPostViews(Array.from(postUris), viewer),
     feedService.embedsForPosts(Array.from(postUris), viewer),
+    labelService.getLabelsForSubjects([...postUris, ...actorDids]),
   ])
 
   const feed: FeedViewPost[] = []
   for (const row of rows) {
-    const post = feedService.formatPostView(row.postUri, actors, posts, embeds)
+    const post = feedService.formatPostView(
+      row.postUri,
+      actors,
+      posts,
+      embeds,
+      labels,
+    )
     const originator = actors[row.originatorDid]
     if (post && originator) {
       let reasonType: string | undefined
       if (row.type === 'repost') {
-        reasonType = 'app.bsky.feed.feedViewPost#reasonRepost'
+        reasonType = 'app.bsky.feed.defs#reasonRepost'
       }
       const replyParent = row.replyParent
-        ? feedService.formatPostView(row.replyParent, actors, posts, embeds)
+        ? feedService.formatPostView(
+            row.replyParent,
+            actors,
+            posts,
+            embeds,
+            labels,
+          )
         : undefined
       const replyRoot = row.replyRoot
-        ? feedService.formatPostView(row.replyRoot, actors, posts, embeds)
+        ? feedService.formatPostView(
+            row.replyRoot,
+            actors,
+            posts,
+            embeds,
+            labels,
+          )
         : undefined
 
       feed.push({
@@ -78,4 +101,11 @@ export class FeedKeyset extends TimeCidKeyset<FeedRow> {
   labelResult(result: FeedRow) {
     return { primary: result.sortAt, secondary: result.cid }
   }
+}
+
+// For users with sparse feeds, avoid scanning more than one week for a single page
+export const getFeedDateThreshold = (from: string | undefined, days = 7) => {
+  const timelineDateThreshold = from ? new Date(from) : new Date()
+  timelineDateThreshold.setDate(timelineDateThreshold.getDate() - days)
+  return timelineDateThreshold.toISOString()
 }

@@ -19,6 +19,7 @@ Object {
   ],
   "postsCount": 2,
   "viewer": Object {
+    "blockedBy": false,
     "muted": false,
   },
 }
@@ -38,6 +39,7 @@ Array [
     "labels": Array [],
     "postsCount": 4,
     "viewer": Object {
+      "blockedBy": false,
       "followedBy": "record(1)",
       "following": "record(0)",
       "muted": false,
@@ -52,18 +54,10 @@ Array [
     "followsCount": 2,
     "handle": "bob.test",
     "indexedAt": "1970-01-01T00:00:00.000Z",
-    "labels": Array [
-      Object {
-        "cid": "cids(0)",
-        "cts": "1970-01-01T00:00:00.000Z",
-        "neg": false,
-        "src": "did:example:labeler",
-        "uri": "record(2)",
-        "val": "test-label",
-      },
-    ],
+    "labels": Array [],
     "postsCount": 3,
     "viewer": Object {
+      "blockedBy": false,
       "muted": false,
     },
   },
@@ -75,7 +69,8 @@ Array [
     "labels": Array [],
     "postsCount": 2,
     "viewer": Object {
-      "following": "record(3)",
+      "blockedBy": false,
+      "following": "record(2)",
       "muted": false,
     },
   },
@@ -95,7 +90,8 @@ Array [
     ],
     "postsCount": 2,
     "viewer": Object {
-      "followedBy": "record(4)",
+      "blockedBy": false,
+      "followedBy": "record(3)",
       "muted": false,
     },
   },
@@ -115,6 +111,7 @@ Object {
   "labels": Array [],
   "postsCount": 4,
   "viewer": Object {
+    "blockedBy": false,
     "followedBy": "record(1)",
     "following": "record(0)",
     "muted": false,
@@ -139,6 +136,7 @@ Object {
   ],
   "postsCount": 2,
   "viewer": Object {
+    "blockedBy": false,
     "followedBy": "record(0)",
     "muted": false,
   },
@@ -158,6 +156,7 @@ Object {
   "labels": Array [],
   "postsCount": 4,
   "viewer": Object {
+    "blockedBy": false,
     "muted": false,
   },
 }
@@ -177,6 +176,7 @@ Object {
   "labels": Array [],
   "postsCount": 4,
   "viewer": Object {
+    "blockedBy": false,
     "muted": false,
   },
 }
@@ -192,6 +192,7 @@ Object {
   "labels": Array [],
   "postsCount": 4,
   "viewer": Object {
+    "blockedBy": false,
     "muted": false,
   },
 }
@@ -210,6 +211,7 @@ Object {
   "labels": Array [],
   "postsCount": 4,
   "viewer": Object {
+    "blockedBy": false,
     "muted": false,
   },
 }

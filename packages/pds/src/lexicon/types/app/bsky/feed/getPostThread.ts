@@ -11,7 +11,8 @@ import * as AppBskyFeedDefs from './defs'
 
 export interface QueryParams {
   uri: string
-  depth?: number
+  depth: number
+  parentHeight: number
 }
 
 export type InputSchema = undefined
@@ -20,6 +21,7 @@ export interface OutputSchema {
   thread:
     | AppBskyFeedDefs.ThreadViewPost
     | AppBskyFeedDefs.NotFoundPost
+    | AppBskyFeedDefs.BlockedPost
     | { $type: string; [k: string]: unknown }
   [k: string]: unknown
 }
@@ -29,6 +31,7 @@ export type HandlerInput = undefined
 export interface HandlerSuccess {
   encoding: 'application/json'
   body: OutputSchema
+  headers?: { [key: string]: string }
 }
 
 export interface HandlerError {

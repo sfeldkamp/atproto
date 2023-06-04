@@ -100,7 +100,9 @@ export const schemaDict = {
             type: 'union',
             refs: [
               'lex:com.atproto.admin.defs#repoView',
+              'lex:com.atproto.admin.defs#repoViewNotFound',
               'lex:com.atproto.admin.defs#recordView',
+              'lex:com.atproto.admin.defs#recordViewNotFound',
             ],
           },
           subjectBlobs: {
@@ -182,6 +184,7 @@ export const schemaDict = {
           'lex:com.atproto.admin.defs#takedown',
           'lex:com.atproto.admin.defs#flag',
           'lex:com.atproto.admin.defs#acknowledge',
+          'lex:com.atproto.admin.defs#escalate',
         ],
       },
       takedown: {
@@ -198,6 +201,11 @@ export const schemaDict = {
         type: 'token',
         description:
           'Moderation action type: Acknowledge. Indicates that the content was reviewed and not considered to violate PDS rules.',
+      },
+      escalate: {
+        type: 'token',
+        description:
+          'Moderation action type: Escalate. Indicates that the content has been flagged for additional review.',
       },
       reportView: {
         type: 'object',
@@ -268,7 +276,9 @@ export const schemaDict = {
             type: 'union',
             refs: [
               'lex:com.atproto.admin.defs#repoView',
+              'lex:com.atproto.admin.defs#repoViewNotFound',
               'lex:com.atproto.admin.defs#recordView',
+              'lex:com.atproto.admin.defs#recordViewNotFound',
             ],
           },
           reportedBy: {
@@ -327,6 +337,9 @@ export const schemaDict = {
             type: 'ref',
             ref: 'lex:com.atproto.server.defs#inviteCode',
           },
+          invitesDisabled: {
+            type: 'boolean',
+          },
         },
       },
       repoViewDetail: {
@@ -381,6 +394,19 @@ export const schemaDict = {
               type: 'ref',
               ref: 'lex:com.atproto.server.defs#inviteCode',
             },
+          },
+          invitesDisabled: {
+            type: 'boolean',
+          },
+        },
+      },
+      repoViewNotFound: {
+        type: 'object',
+        required: ['did'],
+        properties: {
+          did: {
+            type: 'string',
+            format: 'did',
           },
         },
       },
@@ -489,6 +515,16 @@ export const schemaDict = {
           },
         },
       },
+      recordViewNotFound: {
+        type: 'object',
+        required: ['uri'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+        },
+      },
       moderation: {
         type: 'object',
         required: [],
@@ -583,6 +619,30 @@ export const schemaDict = {
       },
     },
   },
+  ComAtprotoAdminDisableAccountInvites: {
+    lexicon: 1,
+    id: 'com.atproto.admin.disableAccountInvites',
+    defs: {
+      main: {
+        type: 'procedure',
+        description:
+          'Disable an account from receiving new invite codes, but does not invalidate existing codes',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['account'],
+            properties: {
+              account: {
+                type: 'string',
+                format: 'did',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   ComAtprotoAdminDisableInviteCodes: {
     lexicon: 1,
     id: 'com.atproto.admin.disableInviteCodes',
@@ -607,6 +667,29 @@ export const schemaDict = {
                 items: {
                   type: 'string',
                 },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  ComAtprotoAdminEnableAccountInvites: {
+    lexicon: 1,
+    id: 'com.atproto.admin.enableAccountInvites',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Re-enable an accounts ability to receive invite codes',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['account'],
+            properties: {
+              account: {
+                type: 'string',
+                format: 'did',
               },
             },
           },
@@ -773,8 +856,23 @@ export const schemaDict = {
             subject: {
               type: 'string',
             },
+            ignoreSubjects: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+            },
             resolved: {
               type: 'boolean',
+            },
+            actionType: {
+              type: 'string',
+              knownValues: [
+                'com.atproto.admin.defs#takedown',
+                'com.atproto.admin.defs#flag',
+                'com.atproto.admin.defs#acknowledge',
+                'com.atproto.admin.defs#escalate',
+              ],
             },
             limit: {
               type: 'integer',
@@ -784,6 +882,11 @@ export const schemaDict = {
             },
             cursor: {
               type: 'string',
+            },
+            reverse: {
+              type: 'boolean',
+              description:
+                'Reverse the order of the returned records? when true, returns reports in chronological order',
             },
           },
         },
@@ -837,6 +940,11 @@ export const schemaDict = {
             ref: 'lex:com.atproto.admin.defs#recordViewDetail',
           },
         },
+        errors: [
+          {
+            name: 'RecordNotFound',
+          },
+        ],
       },
     },
   },
@@ -864,6 +972,49 @@ export const schemaDict = {
             ref: 'lex:com.atproto.admin.defs#repoViewDetail',
           },
         },
+        errors: [
+          {
+            name: 'RepoNotFound',
+          },
+        ],
+      },
+    },
+  },
+  ComAtprotoAdminRebaseRepo: {
+    lexicon: 1,
+    id: 'com.atproto.admin.rebaseRepo',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: "Administrative action to rebase an account's repo",
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['repo'],
+            properties: {
+              repo: {
+                type: 'string',
+                format: 'at-identifier',
+                description: 'The handle or DID of the repo.',
+              },
+              swapCommit: {
+                type: 'string',
+                format: 'cid',
+                description:
+                  'Compare and swap with the previous commit by cid.',
+              },
+            },
+          },
+        },
+        errors: [
+          {
+            name: 'InvalidSwap',
+          },
+          {
+            name: 'ConcurrentWrites',
+          },
+        ],
       },
     },
   },
@@ -1126,12 +1277,12 @@ export const schemaDict = {
         description: 'Provides the DID of a repo.',
         parameters: {
           type: 'params',
+          required: ['handle'],
           properties: {
             handle: {
               type: 'string',
               format: 'handle',
-              description:
-                "The handle to resolve. If not supplied, will resolve the host's own handle.",
+              description: 'The handle to resolve.',
             },
           },
         },
@@ -1509,7 +1660,7 @@ export const schemaDict = {
       create: {
         type: 'object',
         description: 'Create a new record.',
-        required: ['action', 'collection', 'value'],
+        required: ['collection', 'value'],
         properties: {
           collection: {
             type: 'string',
@@ -1517,6 +1668,7 @@ export const schemaDict = {
           },
           rkey: {
             type: 'string',
+            maxLength: 15,
           },
           value: {
             type: 'unknown',
@@ -1526,7 +1678,7 @@ export const schemaDict = {
       update: {
         type: 'object',
         description: 'Update an existing record.',
-        required: ['action', 'collection', 'rkey', 'value'],
+        required: ['collection', 'rkey', 'value'],
         properties: {
           collection: {
             type: 'string',
@@ -1543,7 +1695,7 @@ export const schemaDict = {
       delete: {
         type: 'object',
         description: 'Delete an existing record.',
-        required: ['action', 'collection', 'rkey'],
+        required: ['collection', 'rkey'],
         properties: {
           collection: {
             type: 'string',
@@ -1582,6 +1734,7 @@ export const schemaDict = {
               rkey: {
                 type: 'string',
                 description: 'The key of the record.',
+                maxLength: 15,
               },
               validate: {
                 type: 'boolean',
@@ -1903,6 +2056,7 @@ export const schemaDict = {
               rkey: {
                 type: 'string',
                 description: 'The key of the record.',
+                maxLength: 15,
               },
               validate: {
                 type: 'boolean',
@@ -1948,6 +2102,44 @@ export const schemaDict = {
         errors: [
           {
             name: 'InvalidSwap',
+          },
+        ],
+      },
+    },
+  },
+  ComAtprotoRepoRebaseRepo: {
+    lexicon: 1,
+    id: 'com.atproto.repo.rebaseRepo',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Simple rebase of repo that deletes history',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['repo'],
+            properties: {
+              repo: {
+                type: 'string',
+                format: 'at-identifier',
+                description: 'The handle or DID of the repo.',
+              },
+              swapCommit: {
+                type: 'string',
+                format: 'cid',
+                description:
+                  'Compare and swap with the previous commit by cid.',
+              },
+            },
+          },
+        },
+        errors: [
+          {
+            name: 'InvalidSwap',
+          },
+          {
+            name: 'ConcurrentWrites',
           },
         ],
       },
@@ -2020,6 +2212,10 @@ export const schemaDict = {
                 type: 'string',
                 format: 'handle',
               },
+              did: {
+                type: 'string',
+                format: 'did',
+              },
               inviteCode: {
                 type: 'string',
               },
@@ -2071,7 +2267,63 @@ export const schemaDict = {
           {
             name: 'UnsupportedDomain',
           },
+          {
+            name: 'UnresolvableDid',
+          },
+          {
+            name: 'IncompatibleDidDoc',
+          },
         ],
+      },
+    },
+  },
+  ComAtprotoServerCreateAppPassword: {
+    lexicon: 1,
+    id: 'com.atproto.server.createAppPassword',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Create an app-specific password.',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              name: {
+                type: 'string',
+              },
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'ref',
+            ref: 'lex:com.atproto.server.createAppPassword#appPassword',
+          },
+        },
+        errors: [
+          {
+            name: 'AccountTakedown',
+          },
+        ],
+      },
+      appPassword: {
+        type: 'object',
+        required: ['name', 'password', 'createdAt'],
+        properties: {
+          name: {
+            type: 'string',
+          },
+          password: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+            format: 'datetime',
+          },
+        },
       },
     },
   },
@@ -2133,9 +2385,12 @@ export const schemaDict = {
               useCount: {
                 type: 'integer',
               },
-              forAccount: {
-                type: 'string',
-                format: 'did',
+              forAccounts: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'did',
+                },
               },
             },
           },
@@ -2149,9 +2404,25 @@ export const schemaDict = {
               codes: {
                 type: 'array',
                 items: {
-                  type: 'string',
+                  type: 'ref',
+                  ref: 'lex:com.atproto.server.createInviteCodes#accountCodes',
                 },
               },
+            },
+          },
+        },
+      },
+      accountCodes: {
+        type: 'object',
+        required: ['account', 'codes'],
+        properties: {
+          account: {
+            type: 'string',
+          },
+          codes: {
+            type: 'array',
+            items: {
+              type: 'string',
             },
           },
         },
@@ -2441,6 +2712,50 @@ export const schemaDict = {
       },
     },
   },
+  ComAtprotoServerListAppPasswords: {
+    lexicon: 1,
+    id: 'com.atproto.server.listAppPasswords',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'List all app-specific passwords.',
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['passwords'],
+            properties: {
+              passwords: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:com.atproto.server.listAppPasswords#appPassword',
+                },
+              },
+            },
+          },
+        },
+        errors: [
+          {
+            name: 'AccountTakedown',
+          },
+        ],
+      },
+      appPassword: {
+        type: 'object',
+        required: ['name', 'createdAt'],
+        properties: {
+          name: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+            format: 'datetime',
+          },
+        },
+      },
+    },
+  },
   ComAtprotoServerRefreshSession: {
     lexicon: 1,
     id: 'com.atproto.server.refreshSession',
@@ -2541,6 +2856,28 @@ export const schemaDict = {
             name: 'InvalidToken',
           },
         ],
+      },
+    },
+  },
+  ComAtprotoServerRevokeAppPassword: {
+    lexicon: 1,
+    id: 'com.atproto.server.revokeAppPassword',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Revoke an app-specific password by name.',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              name: {
+                type: 'string',
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -2777,8 +3114,7 @@ export const schemaDict = {
             latest: {
               type: 'string',
               format: 'cid',
-              description:
-                'The latest commit you in the commit range (inclusive',
+              description: 'The latest commit in the commit range (inclusive)',
             },
           },
         },
@@ -3260,6 +3596,17 @@ export const schemaDict = {
           muted: {
             type: 'boolean',
           },
+          mutedByList: {
+            type: 'ref',
+            ref: 'lex:app.bsky.graph.defs#listViewBasic',
+          },
+          blockedBy: {
+            type: 'boolean',
+          },
+          blocking: {
+            type: 'string',
+            format: 'at-uri',
+          },
           following: {
             type: 'string',
             format: 'at-uri',
@@ -3267,6 +3614,87 @@ export const schemaDict = {
           followedBy: {
             type: 'string',
             format: 'at-uri',
+          },
+        },
+      },
+      preferences: {
+        type: 'array',
+        items: {
+          type: 'union',
+          refs: [
+            'lex:app.bsky.actor.defs#adultContentPref',
+            'lex:app.bsky.actor.defs#contentLabelPref',
+            'lex:app.bsky.actor.defs#savedFeedsPref',
+          ],
+        },
+      },
+      adultContentPref: {
+        type: 'object',
+        required: ['enabled'],
+        properties: {
+          enabled: {
+            type: 'boolean',
+            default: false,
+          },
+        },
+      },
+      contentLabelPref: {
+        type: 'object',
+        required: ['label', 'visibility'],
+        properties: {
+          label: {
+            type: 'string',
+          },
+          visibility: {
+            type: 'string',
+            knownValues: ['show', 'warn', 'hide'],
+          },
+        },
+      },
+      savedFeedsPref: {
+        type: 'object',
+        required: ['pinned', 'saved'],
+        properties: {
+          pinned: {
+            type: 'array',
+            items: {
+              type: 'string',
+              format: 'at-uri',
+            },
+          },
+          saved: {
+            type: 'array',
+            items: {
+              type: 'string',
+              format: 'at-uri',
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyActorGetPreferences: {
+    lexicon: 1,
+    id: 'app.bsky.actor.getPreferences',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'Get private preferences attached to the account.',
+        parameters: {
+          type: 'params',
+          properties: {},
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['preferences'],
+            properties: {
+              preferences: {
+                type: 'ref',
+                ref: 'lex:app.bsky.actor.defs#preferences',
+              },
+            },
           },
         },
       },
@@ -3410,6 +3838,29 @@ export const schemaDict = {
               type: 'blob',
               accept: ['image/png', 'image/jpeg'],
               maxSize: 1000000,
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyActorPutPreferences: {
+    lexicon: 1,
+    id: 'app.bsky.actor.putPreferences',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Sets the private preferences attached to the account.',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['preferences'],
+            properties: {
+              preferences: {
+                type: 'ref',
+                ref: 'lex:app.bsky.actor.defs#preferences',
+              },
             },
           },
         },
@@ -3659,6 +4110,8 @@ export const schemaDict = {
             refs: [
               'lex:app.bsky.embed.record#viewRecord',
               'lex:app.bsky.embed.record#viewNotFound',
+              'lex:app.bsky.embed.record#viewBlocked',
+              'lex:app.bsky.feed.defs#generatorView',
             ],
           },
         },
@@ -3682,6 +4135,13 @@ export const schemaDict = {
           value: {
             type: 'unknown',
           },
+          labels: {
+            type: 'array',
+            items: {
+              type: 'ref',
+              ref: 'lex:com.atproto.label.defs#label',
+            },
+          },
           embeds: {
             type: 'array',
             items: {
@@ -3701,6 +4161,16 @@ export const schemaDict = {
         },
       },
       viewNotFound: {
+        type: 'object',
+        required: ['uri'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+        },
+      },
+      viewBlocked: {
         type: 'object',
         required: ['uri'],
         properties: {
@@ -3845,12 +4315,20 @@ export const schemaDict = {
         required: ['root', 'parent'],
         properties: {
           root: {
-            type: 'ref',
-            ref: 'lex:app.bsky.feed.defs#postView',
+            type: 'union',
+            refs: [
+              'lex:app.bsky.feed.defs#postView',
+              'lex:app.bsky.feed.defs#notFoundPost',
+              'lex:app.bsky.feed.defs#blockedPost',
+            ],
           },
           parent: {
-            type: 'ref',
-            ref: 'lex:app.bsky.feed.defs#postView',
+            type: 'union',
+            refs: [
+              'lex:app.bsky.feed.defs#postView',
+              'lex:app.bsky.feed.defs#notFoundPost',
+              'lex:app.bsky.feed.defs#blockedPost',
+            ],
           },
         },
       },
@@ -3881,6 +4359,7 @@ export const schemaDict = {
             refs: [
               'lex:app.bsky.feed.defs#threadViewPost',
               'lex:app.bsky.feed.defs#notFoundPost',
+              'lex:app.bsky.feed.defs#blockedPost',
             ],
           },
           replies: {
@@ -3890,6 +4369,7 @@ export const schemaDict = {
               refs: [
                 'lex:app.bsky.feed.defs#threadViewPost',
                 'lex:app.bsky.feed.defs#notFoundPost',
+                'lex:app.bsky.feed.defs#blockedPost',
               ],
             },
           },
@@ -3906,6 +4386,256 @@ export const schemaDict = {
           notFound: {
             type: 'boolean',
             const: true,
+          },
+        },
+      },
+      blockedPost: {
+        type: 'object',
+        required: ['uri', 'blocked'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+          blocked: {
+            type: 'boolean',
+            const: true,
+          },
+        },
+      },
+      generatorView: {
+        type: 'object',
+        required: ['uri', 'cid', 'creator', 'displayName', 'indexedAt'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+          cid: {
+            type: 'string',
+            format: 'cid',
+          },
+          did: {
+            type: 'string',
+            format: 'did',
+          },
+          creator: {
+            type: 'ref',
+            ref: 'lex:app.bsky.actor.defs#profileView',
+          },
+          displayName: {
+            type: 'string',
+          },
+          description: {
+            type: 'string',
+            maxGraphemes: 300,
+            maxLength: 3000,
+          },
+          descriptionFacets: {
+            type: 'array',
+            items: {
+              type: 'ref',
+              ref: 'lex:app.bsky.richtext.facet',
+            },
+          },
+          avatar: {
+            type: 'string',
+          },
+          likeCount: {
+            type: 'integer',
+            minimum: 0,
+          },
+          viewer: {
+            type: 'ref',
+            ref: 'lex:app.bsky.feed.defs#generatorViewerState',
+          },
+          indexedAt: {
+            type: 'string',
+            format: 'datetime',
+          },
+        },
+      },
+      generatorViewerState: {
+        type: 'object',
+        properties: {
+          like: {
+            type: 'string',
+            format: 'at-uri',
+          },
+        },
+      },
+      skeletonFeedPost: {
+        type: 'object',
+        required: ['post'],
+        properties: {
+          post: {
+            type: 'string',
+            format: 'at-uri',
+          },
+          reason: {
+            type: 'union',
+            refs: ['lex:app.bsky.feed.defs#skeletonReasonRepost'],
+          },
+        },
+      },
+      skeletonReasonRepost: {
+        type: 'object',
+        required: ['repost'],
+        properties: {
+          repost: {
+            type: 'string',
+            format: 'at-uri',
+          },
+        },
+      },
+    },
+  },
+  AppBskyFeedDescribeFeedGenerator: {
+    lexicon: 1,
+    id: 'app.bsky.feed.describeFeedGenerator',
+    defs: {
+      main: {
+        type: 'query',
+        description:
+          'Returns information about a given feed generator including TOS & offered feed URIs',
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['did', 'feeds'],
+            properties: {
+              did: {
+                type: 'string',
+                format: 'did',
+              },
+              feeds: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.describeFeedGenerator#feed',
+                },
+              },
+              links: {
+                type: 'ref',
+                ref: 'lex:app.bsky.feed.describeFeedGenerator#links',
+              },
+            },
+          },
+        },
+      },
+      feed: {
+        type: 'object',
+        required: ['uri'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+        },
+      },
+      links: {
+        type: 'object',
+        properties: {
+          privacyPolicy: {
+            type: 'string',
+          },
+          termsOfService: {
+            type: 'string',
+          },
+        },
+      },
+    },
+  },
+  AppBskyFeedGenerator: {
+    lexicon: 1,
+    id: 'app.bsky.feed.generator',
+    defs: {
+      main: {
+        type: 'record',
+        description: 'A declaration of the existence of a feed generator',
+        key: 'any',
+        record: {
+          type: 'object',
+          required: ['did', 'displayName', 'createdAt'],
+          properties: {
+            did: {
+              type: 'string',
+              format: 'did',
+            },
+            displayName: {
+              type: 'string',
+              maxGraphemes: 24,
+              maxLength: 240,
+            },
+            description: {
+              type: 'string',
+              maxGraphemes: 300,
+              maxLength: 3000,
+            },
+            descriptionFacets: {
+              type: 'array',
+              items: {
+                type: 'ref',
+                ref: 'lex:app.bsky.richtext.facet',
+              },
+            },
+            avatar: {
+              type: 'blob',
+              accept: ['image/png', 'image/jpeg'],
+              maxSize: 1000000,
+            },
+            createdAt: {
+              type: 'string',
+              format: 'datetime',
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyFeedGetActorFeeds: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getActorFeeds',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'Retrieve a list of feeds created by a given actor',
+        parameters: {
+          type: 'params',
+          required: ['actor'],
+          properties: {
+            actor: {
+              type: 'string',
+              format: 'at-identifier',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['feeds'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              feeds: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#generatorView',
+                },
+              },
+            },
           },
         },
       },
@@ -3956,6 +4686,200 @@ export const schemaDict = {
             },
           },
         },
+        errors: [
+          {
+            name: 'BlockedActor',
+          },
+          {
+            name: 'BlockedByActor',
+          },
+        ],
+      },
+    },
+  },
+  AppBskyFeedGetFeed: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getFeed',
+    defs: {
+      main: {
+        type: 'query',
+        description:
+          "Compose and hydrate a feed from a user's selected feed generator",
+        parameters: {
+          type: 'params',
+          required: ['feed'],
+          properties: {
+            feed: {
+              type: 'string',
+              format: 'at-uri',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['feed'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              feed: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#feedViewPost',
+                },
+              },
+            },
+          },
+        },
+        errors: [
+          {
+            name: 'UnknownFeed',
+          },
+        ],
+      },
+    },
+  },
+  AppBskyFeedGetFeedGenerator: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getFeedGenerator',
+    defs: {
+      main: {
+        type: 'query',
+        description:
+          'Get information about a specific feed offered by a feed generator, such as its online status',
+        parameters: {
+          type: 'params',
+          required: ['feed'],
+          properties: {
+            feed: {
+              type: 'string',
+              format: 'at-uri',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['view', 'isOnline', 'isValid'],
+            properties: {
+              view: {
+                type: 'ref',
+                ref: 'lex:app.bsky.feed.defs#generatorView',
+              },
+              isOnline: {
+                type: 'boolean',
+              },
+              isValid: {
+                type: 'boolean',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyFeedGetFeedGenerators: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getFeedGenerators',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'Get information about a list of feed generators',
+        parameters: {
+          type: 'params',
+          required: ['feeds'],
+          properties: {
+            feeds: {
+              type: 'array',
+              items: {
+                type: 'string',
+                format: 'at-uri',
+              },
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['feeds'],
+            properties: {
+              feeds: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#generatorView',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyFeedGetFeedSkeleton: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getFeedSkeleton',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'A skeleton of a feed provided by a feed generator',
+        parameters: {
+          type: 'params',
+          required: ['feed'],
+          properties: {
+            feed: {
+              type: 'string',
+              format: 'at-uri',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['feed'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              feed: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#skeletonFeedPost',
+                },
+              },
+            },
+          },
+        },
+        errors: [
+          {
+            name: 'UnknownFeed',
+          },
+        ],
       },
     },
   },
@@ -4052,6 +4976,15 @@ export const schemaDict = {
             },
             depth: {
               type: 'integer',
+              default: 6,
+              minimum: 0,
+              maximum: 1000,
+            },
+            parentHeight: {
+              type: 'integer',
+              default: 80,
+              minimum: 0,
+              maximum: 1000,
             },
           },
         },
@@ -4066,6 +4999,7 @@ export const schemaDict = {
                 refs: [
                   'lex:app.bsky.feed.defs#threadViewPost',
                   'lex:app.bsky.feed.defs#notFoundPost',
+                  'lex:app.bsky.feed.defs#blockedPost',
                 ],
               },
             },
@@ -4076,6 +5010,46 @@ export const schemaDict = {
             name: 'NotFound',
           },
         ],
+      },
+    },
+  },
+  AppBskyFeedGetPosts: {
+    lexicon: 1,
+    id: 'app.bsky.feed.getPosts',
+    defs: {
+      main: {
+        type: 'query',
+        description: "A view of an actor's feed.",
+        parameters: {
+          type: 'params',
+          required: ['uris'],
+          properties: {
+            uris: {
+              type: 'array',
+              items: {
+                type: 'string',
+                format: 'at-uri',
+              },
+              maxLength: 25,
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['posts'],
+            properties: {
+              posts: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#postView',
+                },
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -4333,6 +5307,140 @@ export const schemaDict = {
       },
     },
   },
+  AppBskyGraphBlock: {
+    lexicon: 1,
+    id: 'app.bsky.graph.block',
+    defs: {
+      main: {
+        type: 'record',
+        description: 'A block.',
+        key: 'tid',
+        record: {
+          type: 'object',
+          required: ['subject', 'createdAt'],
+          properties: {
+            subject: {
+              type: 'string',
+              format: 'did',
+            },
+            createdAt: {
+              type: 'string',
+              format: 'datetime',
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphDefs: {
+    lexicon: 1,
+    id: 'app.bsky.graph.defs',
+    defs: {
+      listViewBasic: {
+        type: 'object',
+        required: ['uri', 'name', 'purpose'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+          name: {
+            type: 'string',
+            maxLength: 64,
+            minLength: 1,
+          },
+          purpose: {
+            type: 'ref',
+            ref: 'lex:app.bsky.graph.defs#listPurpose',
+          },
+          avatar: {
+            type: 'string',
+          },
+          viewer: {
+            type: 'ref',
+            ref: 'lex:app.bsky.graph.defs#listViewerState',
+          },
+          indexedAt: {
+            type: 'string',
+            format: 'datetime',
+          },
+        },
+      },
+      listView: {
+        type: 'object',
+        required: ['uri', 'creator', 'name', 'purpose', 'indexedAt'],
+        properties: {
+          uri: {
+            type: 'string',
+            format: 'at-uri',
+          },
+          creator: {
+            type: 'ref',
+            ref: 'lex:app.bsky.actor.defs#profileView',
+          },
+          name: {
+            type: 'string',
+            maxLength: 64,
+            minLength: 1,
+          },
+          purpose: {
+            type: 'ref',
+            ref: 'lex:app.bsky.graph.defs#listPurpose',
+          },
+          description: {
+            type: 'string',
+            maxGraphemes: 300,
+            maxLength: 3000,
+          },
+          descriptionFacets: {
+            type: 'array',
+            items: {
+              type: 'ref',
+              ref: 'lex:app.bsky.richtext.facet',
+            },
+          },
+          avatar: {
+            type: 'string',
+          },
+          viewer: {
+            type: 'ref',
+            ref: 'lex:app.bsky.graph.defs#listViewerState',
+          },
+          indexedAt: {
+            type: 'string',
+            format: 'datetime',
+          },
+        },
+      },
+      listItemView: {
+        type: 'object',
+        required: ['subject'],
+        properties: {
+          subject: {
+            type: 'ref',
+            ref: 'lex:app.bsky.actor.defs#profileView',
+          },
+        },
+      },
+      listPurpose: {
+        type: 'string',
+        knownValues: ['app.bsky.graph.defs#modlist'],
+      },
+      modlist: {
+        type: 'token',
+        description:
+          'A list of actors to apply an aggregate moderation action (mute/block) on',
+      },
+      listViewerState: {
+        type: 'object',
+        properties: {
+          muted: {
+            type: 'boolean',
+          },
+        },
+      },
+    },
+  },
   AppBskyGraphFollow: {
     lexicon: 1,
     id: 'app.bsky.graph.follow',
@@ -4352,6 +5460,49 @@ export const schemaDict = {
             createdAt: {
               type: 'string',
               format: 'datetime',
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphGetBlocks: {
+    lexicon: 1,
+    id: 'app.bsky.graph.getBlocks',
+    defs: {
+      main: {
+        type: 'query',
+        description: "Who is the requester's account blocking?",
+        parameters: {
+          type: 'params',
+          properties: {
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['blocks'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              blocks: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.actor.defs#profileView',
+                },
+              },
             },
           },
         },
@@ -4462,6 +5613,149 @@ export const schemaDict = {
       },
     },
   },
+  AppBskyGraphGetList: {
+    lexicon: 1,
+    id: 'app.bsky.graph.getList',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'Fetch a list of actors',
+        parameters: {
+          type: 'params',
+          required: ['list'],
+          properties: {
+            list: {
+              type: 'string',
+              format: 'at-uri',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['list', 'items'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              list: {
+                type: 'ref',
+                ref: 'lex:app.bsky.graph.defs#listView',
+              },
+              items: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.graph.defs#listItemView',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphGetListMutes: {
+    lexicon: 1,
+    id: 'app.bsky.graph.getListMutes',
+    defs: {
+      main: {
+        type: 'query',
+        description: "Which lists is the requester's account muting?",
+        parameters: {
+          type: 'params',
+          properties: {
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['lists'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              lists: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.graph.defs#listView',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphGetLists: {
+    lexicon: 1,
+    id: 'app.bsky.graph.getLists',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'Fetch a list of lists that belong to an actor',
+        parameters: {
+          type: 'params',
+          required: ['actor'],
+          properties: {
+            actor: {
+              type: 'string',
+              format: 'at-identifier',
+            },
+            limit: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
+            cursor: {
+              type: 'string',
+            },
+          },
+        },
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['lists'],
+            properties: {
+              cursor: {
+                type: 'string',
+              },
+              lists: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.graph.defs#listView',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   AppBskyGraphGetMutes: {
     lexicon: 1,
     id: 'app.bsky.graph.getMutes',
@@ -4505,6 +5799,82 @@ export const schemaDict = {
       },
     },
   },
+  AppBskyGraphList: {
+    lexicon: 1,
+    id: 'app.bsky.graph.list',
+    defs: {
+      main: {
+        type: 'record',
+        description: 'A declaration of a list of actors.',
+        key: 'tid',
+        record: {
+          type: 'object',
+          required: ['name', 'purpose', 'createdAt'],
+          properties: {
+            purpose: {
+              type: 'ref',
+              ref: 'lex:app.bsky.graph.defs#listPurpose',
+            },
+            name: {
+              type: 'string',
+              maxLength: 64,
+              minLength: 1,
+            },
+            description: {
+              type: 'string',
+              maxGraphemes: 300,
+              maxLength: 3000,
+            },
+            descriptionFacets: {
+              type: 'array',
+              items: {
+                type: 'ref',
+                ref: 'lex:app.bsky.richtext.facet',
+              },
+            },
+            avatar: {
+              type: 'blob',
+              accept: ['image/png', 'image/jpeg'],
+              maxSize: 1000000,
+            },
+            createdAt: {
+              type: 'string',
+              format: 'datetime',
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphListitem: {
+    lexicon: 1,
+    id: 'app.bsky.graph.listitem',
+    defs: {
+      main: {
+        type: 'record',
+        description: 'An item under a declared list of actors',
+        key: 'tid',
+        record: {
+          type: 'object',
+          required: ['subject', 'list', 'createdAt'],
+          properties: {
+            subject: {
+              type: 'string',
+              format: 'did',
+            },
+            list: {
+              type: 'string',
+              format: 'at-uri',
+            },
+            createdAt: {
+              type: 'string',
+              format: 'datetime',
+            },
+          },
+        },
+      },
+    },
+  },
   AppBskyGraphMuteActor: {
     lexicon: 1,
     id: 'app.bsky.graph.muteActor',
@@ -4521,6 +5891,29 @@ export const schemaDict = {
               actor: {
                 type: 'string',
                 format: 'at-identifier',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  AppBskyGraphMuteActorList: {
+    lexicon: 1,
+    id: 'app.bsky.graph.muteActorList',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Mute a list of actors.',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['list'],
+            properties: {
+              list: {
+                type: 'string',
+                format: 'at-uri',
               },
             },
           },
@@ -4551,12 +5944,44 @@ export const schemaDict = {
       },
     },
   },
+  AppBskyGraphUnmuteActorList: {
+    lexicon: 1,
+    id: 'app.bsky.graph.unmuteActorList',
+    defs: {
+      main: {
+        type: 'procedure',
+        description: 'Unmute a list of actors.',
+        input: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['list'],
+            properties: {
+              list: {
+                type: 'string',
+                format: 'at-uri',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   AppBskyNotificationGetUnreadCount: {
     lexicon: 1,
     id: 'app.bsky.notification.getUnreadCount',
     defs: {
       main: {
         type: 'query',
+        parameters: {
+          type: 'params',
+          properties: {
+            seenAt: {
+              type: 'string',
+              format: 'datetime',
+            },
+          },
+        },
         output: {
           encoding: 'application/json',
           schema: {
@@ -4589,6 +6014,10 @@ export const schemaDict = {
             },
             cursor: {
               type: 'string',
+            },
+            seenAt: {
+              type: 'string',
+              format: 'datetime',
             },
           },
         },
@@ -4771,6 +6200,10 @@ export const schemaDict = {
         parameters: {
           type: 'params',
           properties: {
+            includeNsfw: {
+              type: 'boolean',
+              default: false,
+            },
             limit: {
               type: 'integer',
               minimum: 1,
@@ -4804,12 +6237,41 @@ export const schemaDict = {
       },
     },
   },
+  AppBskyUnspeccedGetPopularFeedGenerators: {
+    lexicon: 1,
+    id: 'app.bsky.unspecced.getPopularFeedGenerators',
+    defs: {
+      main: {
+        type: 'query',
+        description: 'An unspecced view of globally popular feed generators',
+        output: {
+          encoding: 'application/json',
+          schema: {
+            type: 'object',
+            required: ['feeds'],
+            properties: {
+              feeds: {
+                type: 'array',
+                items: {
+                  type: 'ref',
+                  ref: 'lex:app.bsky.feed.defs#generatorView',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 }
 export const schemas: LexiconDoc[] = Object.values(schemaDict) as LexiconDoc[]
 export const lexicons: Lexicons = new Lexicons(schemas)
 export const ids = {
   ComAtprotoAdminDefs: 'com.atproto.admin.defs',
+  ComAtprotoAdminDisableAccountInvites:
+    'com.atproto.admin.disableAccountInvites',
   ComAtprotoAdminDisableInviteCodes: 'com.atproto.admin.disableInviteCodes',
+  ComAtprotoAdminEnableAccountInvites: 'com.atproto.admin.enableAccountInvites',
   ComAtprotoAdminGetInviteCodes: 'com.atproto.admin.getInviteCodes',
   ComAtprotoAdminGetModerationAction: 'com.atproto.admin.getModerationAction',
   ComAtprotoAdminGetModerationActions: 'com.atproto.admin.getModerationActions',
@@ -4817,6 +6279,7 @@ export const ids = {
   ComAtprotoAdminGetModerationReports: 'com.atproto.admin.getModerationReports',
   ComAtprotoAdminGetRecord: 'com.atproto.admin.getRecord',
   ComAtprotoAdminGetRepo: 'com.atproto.admin.getRepo',
+  ComAtprotoAdminRebaseRepo: 'com.atproto.admin.rebaseRepo',
   ComAtprotoAdminResolveModerationReports:
     'com.atproto.admin.resolveModerationReports',
   ComAtprotoAdminReverseModerationAction:
@@ -4839,9 +6302,11 @@ export const ids = {
   ComAtprotoRepoGetRecord: 'com.atproto.repo.getRecord',
   ComAtprotoRepoListRecords: 'com.atproto.repo.listRecords',
   ComAtprotoRepoPutRecord: 'com.atproto.repo.putRecord',
+  ComAtprotoRepoRebaseRepo: 'com.atproto.repo.rebaseRepo',
   ComAtprotoRepoStrongRef: 'com.atproto.repo.strongRef',
   ComAtprotoRepoUploadBlob: 'com.atproto.repo.uploadBlob',
   ComAtprotoServerCreateAccount: 'com.atproto.server.createAccount',
+  ComAtprotoServerCreateAppPassword: 'com.atproto.server.createAppPassword',
   ComAtprotoServerCreateInviteCode: 'com.atproto.server.createInviteCode',
   ComAtprotoServerCreateInviteCodes: 'com.atproto.server.createInviteCodes',
   ComAtprotoServerCreateSession: 'com.atproto.server.createSession',
@@ -4852,12 +6317,14 @@ export const ids = {
   ComAtprotoServerGetAccountInviteCodes:
     'com.atproto.server.getAccountInviteCodes',
   ComAtprotoServerGetSession: 'com.atproto.server.getSession',
+  ComAtprotoServerListAppPasswords: 'com.atproto.server.listAppPasswords',
   ComAtprotoServerRefreshSession: 'com.atproto.server.refreshSession',
   ComAtprotoServerRequestAccountDelete:
     'com.atproto.server.requestAccountDelete',
   ComAtprotoServerRequestPasswordReset:
     'com.atproto.server.requestPasswordReset',
   ComAtprotoServerResetPassword: 'com.atproto.server.resetPassword',
+  ComAtprotoServerRevokeAppPassword: 'com.atproto.server.revokeAppPassword',
   ComAtprotoSyncGetBlob: 'com.atproto.sync.getBlob',
   ComAtprotoSyncGetBlocks: 'com.atproto.sync.getBlocks',
   ComAtprotoSyncGetCheckout: 'com.atproto.sync.getCheckout',
@@ -4871,10 +6338,12 @@ export const ids = {
   ComAtprotoSyncRequestCrawl: 'com.atproto.sync.requestCrawl',
   ComAtprotoSyncSubscribeRepos: 'com.atproto.sync.subscribeRepos',
   AppBskyActorDefs: 'app.bsky.actor.defs',
+  AppBskyActorGetPreferences: 'app.bsky.actor.getPreferences',
   AppBskyActorGetProfile: 'app.bsky.actor.getProfile',
   AppBskyActorGetProfiles: 'app.bsky.actor.getProfiles',
   AppBskyActorGetSuggestions: 'app.bsky.actor.getSuggestions',
   AppBskyActorProfile: 'app.bsky.actor.profile',
+  AppBskyActorPutPreferences: 'app.bsky.actor.putPreferences',
   AppBskyActorSearchActors: 'app.bsky.actor.searchActors',
   AppBskyActorSearchActorsTypeahead: 'app.bsky.actor.searchActorsTypeahead',
   AppBskyEmbedExternal: 'app.bsky.embed.external',
@@ -4882,24 +6351,44 @@ export const ids = {
   AppBskyEmbedRecord: 'app.bsky.embed.record',
   AppBskyEmbedRecordWithMedia: 'app.bsky.embed.recordWithMedia',
   AppBskyFeedDefs: 'app.bsky.feed.defs',
+  AppBskyFeedDescribeFeedGenerator: 'app.bsky.feed.describeFeedGenerator',
+  AppBskyFeedGenerator: 'app.bsky.feed.generator',
+  AppBskyFeedGetActorFeeds: 'app.bsky.feed.getActorFeeds',
   AppBskyFeedGetAuthorFeed: 'app.bsky.feed.getAuthorFeed',
+  AppBskyFeedGetFeed: 'app.bsky.feed.getFeed',
+  AppBskyFeedGetFeedGenerator: 'app.bsky.feed.getFeedGenerator',
+  AppBskyFeedGetFeedGenerators: 'app.bsky.feed.getFeedGenerators',
+  AppBskyFeedGetFeedSkeleton: 'app.bsky.feed.getFeedSkeleton',
   AppBskyFeedGetLikes: 'app.bsky.feed.getLikes',
   AppBskyFeedGetPostThread: 'app.bsky.feed.getPostThread',
+  AppBskyFeedGetPosts: 'app.bsky.feed.getPosts',
   AppBskyFeedGetRepostedBy: 'app.bsky.feed.getRepostedBy',
   AppBskyFeedGetTimeline: 'app.bsky.feed.getTimeline',
   AppBskyFeedLike: 'app.bsky.feed.like',
   AppBskyFeedPost: 'app.bsky.feed.post',
   AppBskyFeedRepost: 'app.bsky.feed.repost',
+  AppBskyGraphBlock: 'app.bsky.graph.block',
+  AppBskyGraphDefs: 'app.bsky.graph.defs',
   AppBskyGraphFollow: 'app.bsky.graph.follow',
+  AppBskyGraphGetBlocks: 'app.bsky.graph.getBlocks',
   AppBskyGraphGetFollowers: 'app.bsky.graph.getFollowers',
   AppBskyGraphGetFollows: 'app.bsky.graph.getFollows',
+  AppBskyGraphGetList: 'app.bsky.graph.getList',
+  AppBskyGraphGetListMutes: 'app.bsky.graph.getListMutes',
+  AppBskyGraphGetLists: 'app.bsky.graph.getLists',
   AppBskyGraphGetMutes: 'app.bsky.graph.getMutes',
+  AppBskyGraphList: 'app.bsky.graph.list',
+  AppBskyGraphListitem: 'app.bsky.graph.listitem',
   AppBskyGraphMuteActor: 'app.bsky.graph.muteActor',
+  AppBskyGraphMuteActorList: 'app.bsky.graph.muteActorList',
   AppBskyGraphUnmuteActor: 'app.bsky.graph.unmuteActor',
+  AppBskyGraphUnmuteActorList: 'app.bsky.graph.unmuteActorList',
   AppBskyNotificationGetUnreadCount: 'app.bsky.notification.getUnreadCount',
   AppBskyNotificationListNotifications:
     'app.bsky.notification.listNotifications',
   AppBskyNotificationUpdateSeen: 'app.bsky.notification.updateSeen',
   AppBskyRichtextFacet: 'app.bsky.richtext.facet',
   AppBskyUnspeccedGetPopular: 'app.bsky.unspecced.getPopular',
+  AppBskyUnspeccedGetPopularFeedGenerators:
+    'app.bsky.unspecced.getPopularFeedGenerators',
 }

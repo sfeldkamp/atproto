@@ -1,9 +1,10 @@
 import AtpAgent from '@atproto/api'
-import { DidResolver } from '@atproto/did-resolver'
+import { IdResolver } from '@atproto/identity'
 import { SeedClient } from './seeds/client'
 import basicSeed from './seeds/basic'
 import * as util from './_util'
 import { AppContext } from '../src'
+import { moderatorAuth } from './_util'
 
 // outside of suite so they can be used in mock
 let alice: string
@@ -28,7 +29,7 @@ describe('handles', () => {
   let close: util.CloseFn
   let sc: SeedClient
   let ctx: AppContext
-  let didResolver: DidResolver
+  let idResolver: IdResolver
 
   const newHandle = 'alice2.test'
 
@@ -37,7 +38,7 @@ describe('handles', () => {
       dbPostgresSchema: 'handles',
     })
     ctx = server.ctx
-    didResolver = new DidResolver({ plcUrl: ctx.cfg.didPlcUrl })
+    idResolver = new IdResolver({ plcUrl: ctx.cfg.didPlcUrl })
     close = server.close
     agent = new AtpAgent({ service: server.url })
     sc = new SeedClient(agent)
@@ -64,11 +65,6 @@ describe('handles', () => {
     expect(res.data.did).toBe(alice)
   })
 
-  it('does not resolve a "handle" for the service', async () => {
-    const promise = agent.api.com.atproto.identity.resolveHandle()
-    await expect(promise).rejects.toThrow('Unable to resolve handle')
-  })
-
   it('allows a user to change their handle', async () => {
     await agent.api.com.atproto.identity.updateHandle(
       { handle: newHandle },
@@ -85,7 +81,7 @@ describe('handles', () => {
   })
 
   it('updates their did document', async () => {
-    const data = await didResolver.resolveAtpData(alice)
+    const data = await idResolver.did.resolveAtprotoData(alice)
     expect(data.handle).toBe(newHandle)
   })
 
@@ -136,7 +132,7 @@ describe('handles', () => {
   })
 
   it('if handle update fails, it does not update their did document', async () => {
-    const data = await didResolver.resolveAtpData(alice)
+    const data = await idResolver.did.resolveAtprotoData(alice)
     expect(data.handle).toBe(newHandle)
   })
 
@@ -198,7 +194,7 @@ describe('handles', () => {
     )
     expect(profile.data.handle).toBe('alice.external')
 
-    const data = await didResolver.resolveAtpData(alice)
+    const data = await idResolver.did.resolveAtprotoData(alice)
     expect(data.handle).toBe('alice.external')
   })
 
@@ -249,6 +245,25 @@ describe('handles', () => {
     expect(profile.data.handle).toBe('bob-alt.test')
   })
 
+  it('allows admin override of reserved domains', async () => {
+    await agent.api.com.atproto.admin.updateAccountHandle(
+      {
+        did: bob,
+        handle: 'dril.test',
+      },
+      {
+        headers: { authorization: util.adminAuth() },
+        encoding: 'application/json',
+      },
+    )
+
+    const profile = await agent.api.app.bsky.actor.getProfile(
+      { actor: bob },
+      { headers: sc.getHeaders(bob) },
+    )
+    expect(profile.data.handle).toBe('dril.test')
+  })
+
   it('disallows admin overrules of off-service domains', async () => {
     const attempt = agent.api.com.atproto.admin.updateAccountHandle(
       {
@@ -296,5 +311,16 @@ describe('handles', () => {
       handle: 'bob-alt.test',
     })
     await expect(attempt2).rejects.toThrow('Authentication Required')
+    const attempt3 = agent.api.com.atproto.admin.updateAccountHandle(
+      {
+        did: bob,
+        handle: 'bob-alt.test',
+      },
+      {
+        headers: { authorization: moderatorAuth() },
+        encoding: 'application/json',
+      },
+    )
+    await expect(attempt3).rejects.toThrow('Authentication Required')
   })
 })

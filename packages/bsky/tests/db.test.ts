@@ -1,25 +1,22 @@
 import { once } from 'events'
 import { wait } from '@atproto/common'
+import { TestNetwork } from '@atproto/dev-env'
 import { Database } from '../src'
 import { Leader } from '../src/db/leader'
-import { runTestServer, CloseFn } from './_util'
 
 describe('db', () => {
-  let close: CloseFn
+  let network: TestNetwork
   let db: Database
 
   beforeAll(async () => {
-    const server = await runTestServer({
-      dbPostgresSchema: 'db',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_db',
     })
-    close = server.close
-    db = server.ctx.db
+    db = network.bsky.ctx.db
   })
 
   afterAll(async () => {
-    if (close) {
-      await close()
-    }
+    await network.close()
   })
 
   describe('transaction()', () => {
@@ -99,6 +96,71 @@ describe('db', () => {
       await db.transaction(async (dbTxn) => {
         expect(() => dbTxn.assertTransaction()).not.toThrow()
       })
+    })
+
+    it('does not allow leaky transactions', async () => {
+      let leakedTx: Database | undefined
+
+      const tx = db.transaction(async (dbTxn) => {
+        leakedTx = dbTxn
+        await dbTxn.db
+          .insertInto('actor')
+          .values({ handle: 'a', did: 'a', indexedAt: 'bad-date' })
+          .execute()
+        throw new Error('test tx failed')
+      })
+      await expect(tx).rejects.toThrow('test tx failed')
+
+      const attempt = leakedTx?.db
+        .insertInto('actor')
+        .values({ handle: 'b', did: 'b', indexedAt: 'bad-date' })
+        .execute()
+      await expect(attempt).rejects.toThrow('tx already failed')
+
+      const res = await db.db
+        .selectFrom('actor')
+        .selectAll()
+        .where('did', 'in', ['a', 'b'])
+        .execute()
+
+      expect(res.length).toBe(0)
+    })
+
+    it('ensures all inflight querys are rolled back', async () => {
+      let promise: Promise<unknown> | undefined = undefined
+      const names: string[] = []
+      try {
+        await db.transaction(async (dbTxn) => {
+          const queries: Promise<unknown>[] = []
+          for (let i = 0; i < 20; i++) {
+            const name = `user${i}`
+            const query = dbTxn.db
+              .insertInto('actor')
+              .values({
+                handle: name,
+                did: name,
+                indexedAt: 'bad-date',
+              })
+              .execute()
+            names.push(name)
+            queries.push(query)
+          }
+          promise = Promise.allSettled(queries)
+          throw new Error()
+        })
+      } catch (err) {
+        expect(err).toBeDefined()
+      }
+      if (promise) {
+        await promise
+      }
+
+      const res = await db.db
+        .selectFrom('actor')
+        .selectAll()
+        .where('did', 'in', names)
+        .execute()
+      expect(res.length).toBe(0)
     })
   })
 

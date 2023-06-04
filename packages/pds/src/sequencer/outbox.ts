@@ -30,10 +30,12 @@ export class Outbox {
   async *events(
     backfillCursor?: number,
     backFillTime?: string,
+    signal?: AbortSignal,
   ): AsyncGenerator<SeqEvt> {
     // catch up as much as we can
     if (backfillCursor !== undefined) {
       for await (const evt of this.getBackfill(backfillCursor, backFillTime)) {
+        if (signal?.aborted) return
         this.lastSeen = evt.seq
         yield evt
       }
@@ -43,13 +45,21 @@ export class Outbox {
     }
 
     // streams updates from sequencer, but buffers them for cutover as it makes a last request
-    this.sequencer.on('events', (evts) => {
+
+    const addToBuffer = (evts) => {
       if (this.caughtUp) {
         this.outBuffer.pushMany(evts)
       } else {
         this.cutoverBuffer = [...this.cutoverBuffer, ...evts]
       }
-    })
+    }
+
+    if (!signal?.aborted) {
+      this.sequencer.on('events', addToBuffer)
+    }
+    signal?.addEventListener('abort', () =>
+      this.sequencer.off('events', addToBuffer),
+    )
 
     const cutover = async () => {
       // only need to perform cutover if we've been backfilling
@@ -72,6 +82,7 @@ export class Outbox {
     while (true) {
       try {
         for await (const evt of this.outBuffer.events()) {
+          if (signal?.aborted) return
           if (evt.seq > this.lastSeen) {
             this.lastSeen = evt.seq
             yield evt
@@ -93,14 +104,14 @@ export class Outbox {
       const evts = await this.sequencer.requestSeqRange({
         earliestTime: backfillTime,
         earliestSeq: this.lastSeen > -1 ? this.lastSeen : backfillCursor,
-        limit: 50,
+        limit: 10,
       })
       for (const evt of evts) {
         yield evt
       }
       // if we're within 50 of the sequencer, we call it good & switch to cutover
       const seqCursor = this.sequencer.lastSeen ?? -1
-      if (seqCursor - this.lastSeen < 50) break
+      if (seqCursor - this.lastSeen < 10) break
       if (evts.length < 1) break
     }
   }

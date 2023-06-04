@@ -1,29 +1,28 @@
 import { AtUri } from '@atproto/uri'
 import { cidForCbor, TID } from '@atproto/common'
 import { WriteOpAction } from '@atproto/repo'
-import { CloseFn, runTestServer } from './_util'
+import { TestNetwork } from '@atproto/dev-env'
 import { Database } from '../src'
 import * as lex from '../src/lexicon/lexicons'
 import { Services } from '../src/services'
 
 describe('duplicate record', () => {
-  let close: CloseFn
+  let network: TestNetwork
   let did: string
   let db: Database
   let services: Services
 
   beforeAll(async () => {
-    const server = await runTestServer({
-      dbPostgresSchema: 'duplicates',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_duplicates',
     })
-    db = server.ctx.db
-    services = server.ctx.services
-    close = server.close
+    db = network.bsky.ctx.db
+    services = network.bsky.ctx.services
     did = 'did:example:alice'
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
 
   const countRecords = async (db: Database, table: string) => {

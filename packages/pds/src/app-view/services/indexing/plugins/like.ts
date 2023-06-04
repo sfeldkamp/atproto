@@ -2,11 +2,15 @@ import { AtUri } from '@atproto/uri'
 import { CID } from 'multiformats/cid'
 import * as Like from '../../../../lexicon/types/app/bsky/feed/like'
 import * as lex from '../../../../lexicon/lexicons'
+import Database from '../../../../db'
 import {
   DatabaseSchema,
   DatabaseSchemaType,
 } from '../../../../db/database-schema'
+import { countAll, excluded } from '../../../../db/util'
+import { BackgroundQueue } from '../../../../event-stream/background-queue'
 import RecordProcessor from '../processor'
+import { toSimplifiedISOSafe } from '../util'
 
 const lexId = lex.ids.AppBskyFeedLike
 type IndexedLike = DatabaseSchemaType['like']
@@ -26,7 +30,7 @@ const insertFn = async (
       creator: uri.host,
       subject: obj.subject.uri,
       subjectCid: obj.subject.cid,
-      createdAt: obj.createdAt,
+      createdAt: toSimplifiedISOSafe(obj.createdAt),
       indexedAt: timestamp,
     })
     .onConflict((oc) => oc.doNothing())
@@ -84,16 +88,36 @@ const notifsForDelete = (
   return { notifs: [], toDelete }
 }
 
+const updateAggregates = async (db: DatabaseSchema, like: IndexedLike) => {
+  const likeCountQb = db
+    .insertInto('post_agg')
+    .values({
+      uri: like.subject,
+      likeCount: db
+        .selectFrom('like')
+        .where('like.subject', '=', like.subject)
+        .select(countAll.as('count')),
+    })
+    .onConflict((oc) =>
+      oc.column('uri').doUpdateSet({ likeCount: excluded(db, 'likeCount') }),
+    )
+  await likeCountQb.execute()
+}
+
 export type PluginType = RecordProcessor<Like.Record, IndexedLike>
 
-export const makePlugin = (db: DatabaseSchema): PluginType => {
-  return new RecordProcessor(db, {
+export const makePlugin = (
+  db: Database,
+  backgroundQueue: BackgroundQueue,
+): PluginType => {
+  return new RecordProcessor(db, backgroundQueue, {
     lexId,
     insertFn,
     findDuplicate,
     deleteFn,
     notifsForInsert,
     notifsForDelete,
+    updateAggregates,
   })
 }
 

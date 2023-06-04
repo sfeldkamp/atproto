@@ -33,7 +33,7 @@ Log into a server or create accounts using these APIs. You'll need an active ses
 import { BskyAgent, AtpSessionEvent, AtpSessionData } from '@atproto/api'
 const agent = new BskyAgent({
   service: 'https://example.com',
-  persistSession: (evt: AtpSessionEvent, sess?: AtpSessionData) {
+  persistSession: (evt: AtpSessionEvent, sess?: AtpSessionData) => {
     // store the session-data for reuse 
   }
 })
@@ -57,6 +57,7 @@ await agent.getTimeline(params, opts)
 await agent.getAuthorFeed(params, opts)
 await agent.getPostThread(params, opts)
 await agent.getPost(params)
+await agent.getPosts(params, opts)
 await agent.getLikes(params, opts)
 await agent.getRepostedBy(params, opts)
 await agent.post(record)
@@ -77,6 +78,7 @@ await agent.deleteFollow(followUri)
 await agent.getProfile(params, opts)
 await agent.upsertProfile(updateFn)
 await agent.getProfiles(params, opts)
+await agent.getSuggestions(params, opts)
 await agent.searchActors(params, opts)
 await agent.searchActorsTypeahead(params, opts)
 await agent.mute(did)
@@ -174,17 +176,17 @@ const res1 = await agent.com.atproto.repo.createRecord(
     record: {
       $type: 'app.bsky.feed.post',
       text: 'Hello, world!',
-      createdAt: (new Date()).toISOString()
+      createdAt: new Date().toISOString()
     }
   }
 )
-const res2 = await agent.com.atproto.repo.listRecords({user: alice.did, collection: 'app.bsky.feed.post'})
+const res2 = await agent.com.atproto.repo.listRecords({repo: alice.did, collection: 'app.bsky.feed.post'})
 
-const res3 = await agent.app.bsky.feed.post.create({did: alice.did}, {
+const res3 = await agent.app.bsky.feed.post.create({repo: alice.did}, {
   text: 'Hello, world!',
-  createdAt: (new Date()).toISOString()
+  createdAt: new Date().toISOString()
 })
-const res4 = await agent.app.bsky.feed.post.list({did: alice.did})
+const res4 = await agent.app.bsky.feed.post.list({repo: alice.did})
 ```
 
 ### Generic agent

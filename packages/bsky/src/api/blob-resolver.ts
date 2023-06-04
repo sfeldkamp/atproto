@@ -4,11 +4,13 @@ import createError from 'http-errors'
 import axios, { AxiosError } from 'axios'
 import { CID } from 'multiformats/cid'
 import { ensureValidDid } from '@atproto/identifier'
-import { VerifyCidTransform } from '@atproto/common'
-import { NoResolveDidError } from '@atproto/did-resolver'
+import { forwardStreamErrors, VerifyCidTransform } from '@atproto/common'
+import { IdResolver, DidNotFoundError } from '@atproto/identity'
+import { TAKEDOWN } from '../lexicon/types/com/atproto/admin/defs'
 import AppContext from '../context'
 import { httpLogger as log } from '../logger'
 import { retryHttp } from '../util/retry'
+import Database from '../db'
 
 // Resolve and verify blob from its origin host
 
@@ -30,25 +32,18 @@ export const createRouter = (ctx: AppContext): express.Router => {
         return next(createError(400, 'Invalid cid'))
       }
 
-      const { pds } = await ctx.didResolver.resolveAtpData(did) // @TODO cache did info
-      const blobResult = await retryHttp(() =>
-        getBlob({ pds, did, cid: cidStr }),
-      )
-
-      const imageStream: Readable = blobResult.data
-      const verifyCid = new VerifyCidTransform(cid)
+      const verifiedImage = await resolveBlob(did, cid, ctx)
 
       // Send chunked response, destroying stream early (before
       // closing chunk) if the bytes don't match the expected cid.
       res.statusCode = 200
-      res.setHeader(
-        'content-type',
-        blobResult.headers['content-type'] || 'application/octet-stream',
-      )
-      pipeline(imageStream, verifyCid, res, (err) => {
+      res.setHeader('content-type', verifiedImage.contentType)
+      res.setHeader('x-content-type-options', 'nosniff')
+      res.setHeader('content-security-policy', `default-src 'none'; sandbox`)
+      pipeline(verifiedImage.stream, res, (err) => {
         if (err) {
           log.warn(
-            { err, did, cid: cidStr, pds },
+            { err, did, cid: cidStr, pds: verifiedImage.pds },
             'blob resolution failed during transmission',
           )
         }
@@ -71,7 +66,7 @@ export const createRouter = (ctx: AppContext): express.Router => {
         }
         return next(createError(404, 'Blob not found'))
       }
-      if (err instanceof NoResolveDidError) {
+      if (err instanceof DidNotFoundError) {
         return next(createError(404, 'Blob not found'))
       }
       return next(err)
@@ -79,6 +74,47 @@ export const createRouter = (ctx: AppContext): express.Router => {
   })
 
   return router
+}
+
+export async function resolveBlob(
+  did: string,
+  cid: CID,
+  ctx: {
+    db: Database
+    idResolver: IdResolver
+  },
+) {
+  const cidStr = cid.toString()
+  const [{ pds }, takedown] = await Promise.all([
+    ctx.idResolver.did.resolveAtprotoData(did), // @TODO cache did info
+    ctx.db.db
+      .selectFrom('moderation_action_subject_blob')
+      .select('actionId')
+      .innerJoin(
+        'moderation_action',
+        'moderation_action.id',
+        'moderation_action_subject_blob.actionId',
+      )
+      .where('cid', '=', cidStr)
+      .where('action', '=', TAKEDOWN)
+      .where('reversedAt', 'is', null)
+      .executeTakeFirst(),
+  ])
+  if (takedown) {
+    throw createError(404, 'Blob not found')
+  }
+
+  const blobResult = await retryHttp(() => getBlob({ pds, did, cid: cidStr }))
+  const imageStream: Readable = blobResult.data
+  const verifyCid = new VerifyCidTransform(cid)
+
+  forwardStreamErrors(imageStream, verifyCid)
+  return {
+    pds,
+    contentType:
+      blobResult.headers['content-type'] || 'application/octet-stream',
+    stream: imageStream.pipe(verifyCid),
+  }
 }
 
 async function getBlob(opts: { pds: string; did: string; cid: string }) {

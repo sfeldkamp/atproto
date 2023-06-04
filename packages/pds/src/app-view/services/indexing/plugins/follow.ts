@@ -2,11 +2,15 @@ import { AtUri } from '@atproto/uri'
 import { CID } from 'multiformats/cid'
 import * as Follow from '../../../../lexicon/types/app/bsky/graph/follow'
 import * as lex from '../../../../lexicon/lexicons'
+import Database from '../../../../db'
 import {
   DatabaseSchema,
   DatabaseSchemaType,
 } from '../../../../db/database-schema'
+import { countAll, excluded } from '../../../../db/util'
+import { BackgroundQueue } from '../../../../event-stream/background-queue'
 import RecordProcessor from '../processor'
+import { toSimplifiedISOSafe } from '../util'
 
 const lexId = lex.ids.AppBskyGraphFollow
 type IndexedFollow = DatabaseSchemaType['follow']
@@ -25,7 +29,7 @@ const insertFn = async (
       cid: cid.toString(),
       creator: uri.host,
       subjectDid: obj.subject,
-      createdAt: obj.createdAt,
+      createdAt: toSimplifiedISOSafe(obj.createdAt),
       indexedAt: timestamp,
     })
     .onConflict((oc) => oc.doNothing())
@@ -82,16 +86,52 @@ const notifsForDelete = (
   return { notifs: [], toDelete }
 }
 
+const updateAggregates = async (db: DatabaseSchema, follow: IndexedFollow) => {
+  const followersCountQb = db
+    .insertInto('profile_agg')
+    .values({
+      did: follow.subjectDid,
+      followersCount: db
+        .selectFrom('follow')
+        .where('follow.subjectDid', '=', follow.subjectDid)
+        .select(countAll.as('count')),
+    })
+    .onConflict((oc) =>
+      oc.column('did').doUpdateSet({
+        followersCount: excluded(db, 'followersCount'),
+      }),
+    )
+  const followsCountQb = db
+    .insertInto('profile_agg')
+    .values({
+      did: follow.creator,
+      followsCount: db
+        .selectFrom('follow')
+        .where('follow.creator', '=', follow.creator)
+        .select(countAll.as('count')),
+    })
+    .onConflict((oc) =>
+      oc.column('did').doUpdateSet({
+        followsCount: excluded(db, 'followsCount'),
+      }),
+    )
+  await Promise.all([followersCountQb.execute(), followsCountQb.execute()])
+}
+
 export type PluginType = RecordProcessor<Follow.Record, IndexedFollow>
 
-export const makePlugin = (db: DatabaseSchema): PluginType => {
-  return new RecordProcessor(db, {
+export const makePlugin = (
+  db: Database,
+  backgroundQueue: BackgroundQueue,
+): PluginType => {
+  return new RecordProcessor(db, backgroundQueue, {
     lexId,
     insertFn,
     findDuplicate,
     deleteFn,
     notifsForInsert,
     notifsForDelete,
+    updateAggregates,
   })
 }
 

@@ -12,10 +12,12 @@ import { PDS, ServerConfig, Database, MemoryBlobStore } from '../src/index'
 import { FeedViewPost } from '../src/lexicon/types/app/bsky/feed/defs'
 import DiskBlobStore from '../src/storage/disk-blobstore'
 import AppContext from '../src/context'
-import { HOUR } from '@atproto/common'
+import { DAY, HOUR } from '@atproto/common'
 import { lexToJson } from '@atproto/lexicon'
+import { MountedAlgos } from '../src/feed-gen/types'
 
 const ADMIN_PASSWORD = 'admin-pass'
+const MODERATOR_PASSWORD = 'moderator-pass'
 
 export type CloseFn = () => Promise<void>
 export type TestServerInfo = {
@@ -26,6 +28,7 @@ export type TestServerInfo = {
 
 export type TestServerOpts = {
   migration?: string
+  algos?: MountedAlgos
 }
 
 export const runTestServer = async (
@@ -77,9 +80,12 @@ export const runTestServer = async (
     serverDid,
     recoveryKey,
     adminPassword: ADMIN_PASSWORD,
+    moderatorPassword: MODERATOR_PASSWORD,
     inviteRequired: false,
     userInviteInterval: null,
     didPlcUrl: plcUrl,
+    didCacheMaxTTL: DAY,
+    didCacheStaleTTL: HOUR,
     jwtSecret: 'jwt-secret',
     availableUserDomains: ['.test'],
     appUrlPasswordReset: 'app://forgot-password',
@@ -93,6 +99,7 @@ export const runTestServer = async (
     blobstoreTmp: `${blobstoreLoc}/tmp`,
     labelerDid: 'did:example:labeler',
     labelerKeywords: { label_me: 'test-label', label_me_2: 'test-label-2' },
+    feedGenDid: 'did:example:feedGen',
     maxSubscriptionBuffer: 200,
     repoBackfillLimitMs: HOUR,
     ...params,
@@ -106,10 +113,22 @@ export const runTestServer = async (
         })
       : Database.memory()
 
+  // Separate migration db on postgres in case migration changes some
+  // connection state that we need in the tests, e.g. "alter database ... set ..."
+  const migrationDb =
+    cfg.dbPostgresUrl !== undefined
+      ? Database.postgres({
+          url: cfg.dbPostgresUrl,
+          schema: cfg.dbPostgresSchema,
+        })
+      : db
   if (opts.migration) {
-    await db.migrateToOrThrow(opts.migration)
+    await migrationDb.migrateToOrThrow(opts.migration)
   } else {
-    await db.migrateToLatestOrThrow()
+    await migrationDb.migrateToLatestOrThrow()
+  }
+  if (migrationDb !== db) {
+    await migrationDb.close()
   }
 
   const blobstore =
@@ -123,6 +142,7 @@ export const runTestServer = async (
     repoSigningKey,
     plcRotationKey,
     config: cfg,
+    algos: opts.algos,
   })
   const pdsServer = await pds.start()
   const pdsPort = (pdsServer.address() as AddressInfo).port
@@ -138,10 +158,18 @@ export const runTestServer = async (
 }
 
 export const adminAuth = () => {
+  return basicAuth('admin', ADMIN_PASSWORD)
+}
+
+export const moderatorAuth = () => {
+  return basicAuth('admin', MODERATOR_PASSWORD)
+}
+
+const basicAuth = (username: string, password: string) => {
   return (
     'Basic ' +
     uint8arrays.toString(
-      uint8arrays.fromString('admin:' + ADMIN_PASSWORD, 'utf8'),
+      uint8arrays.fromString(`${username}:${password}`, 'utf8'),
       'base64pad',
     )
   )
@@ -179,10 +207,28 @@ export const forSnapshot = (obj: unknown) => {
       return take(unknown, str)
     }
     if (str.match(/^\d{4}-\d{2}-\d{2}T/)) {
-      return constantDate
+      if (str.match(/\d{6}Z$/)) {
+        return constantDate.replace('Z', '000Z') // e.g. microseconds in record createdAt
+      } else if (str.endsWith('+00:00')) {
+        return constantDate.replace('Z', '+00:00') // e.g. timezone in record createdAt
+      } else {
+        return constantDate
+      }
     }
     if (str.match(/^\d+::bafy/)) {
       return constantKeysetCursor
+    }
+    if (str.match(/\/image\/[^/]+\/.+\/did:plc:[^/]+\/[^/]+@[\w]+$/)) {
+      // Match image urls
+      const match = str.match(
+        /\/image\/([^/]+)\/.+\/(did:plc:[^/]+)\/([^/]+)@[\w]+$/,
+      )
+      if (!match) return str
+      const [, sig, did, cid] = match
+      return str
+        .replace(sig, 'sig()')
+        .replace(did, take(users, did))
+        .replace(cid, take(cids, cid))
     }
     if (str.startsWith('pds-public-url-')) {
       return 'invite-code'

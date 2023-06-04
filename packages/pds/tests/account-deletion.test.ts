@@ -1,4 +1,5 @@
 import { once, EventEmitter } from 'events'
+import { Selectable } from 'kysely'
 import Mail from 'nodemailer/lib/mailer'
 import AtpAgent from '@atproto/api'
 import { SeedClient } from './seeds/client'
@@ -25,9 +26,14 @@ import { RepoCommitHistory } from '../src/db/tables/repo-commit-history'
 import { RepoCommitBlock } from '../src/db/tables/repo-commit-block'
 import { Record } from '../src/db/tables/record'
 import { RepoSeq } from '../src/db/tables/repo-seq'
-import { Selectable } from 'kysely'
+import { ACKNOWLEDGE } from '../src/lexicon/types/com/atproto/admin/defs'
+import { UserState } from '../src/db/tables/user-state'
+import { ActorBlock } from '../src/app-view/db/tables/actor-block'
+import { List } from '../src/app-view/db/tables/list'
+import { ListItem } from '../src/app-view/db/tables/list-item'
 
 describe('account deletion', () => {
+  let server: util.TestServerInfo
   let agent: AtpAgent
   let close: util.CloseFn
   let sc: SeedClient
@@ -44,7 +50,7 @@ describe('account deletion', () => {
   let carol
 
   beforeAll(async () => {
-    const server = await util.runTestServer({
+    server = await util.runTestServer({
       dbPostgresSchema: 'account_deletion',
     })
     close = server.close
@@ -80,7 +86,7 @@ describe('account deletion', () => {
   }
 
   const getTokenFromMail = (mail: Mail.Options) =>
-    mail.html?.toString().match(/>(\d{6})</)?.[1]
+    mail.html?.toString().match(/>([a-z0-9]{5}-[a-z0-9]{5})</i)?.[1]
 
   let token
 
@@ -119,11 +125,28 @@ describe('account deletion', () => {
   })
 
   it('deletes account with a valid token & password', async () => {
+    // Perform account deletion, including when there's an existing mod action on the account
+    await agent.api.com.atproto.admin.takeModerationAction(
+      {
+        action: ACKNOWLEDGE,
+        subject: {
+          $type: 'com.atproto.admin.defs#repoRef',
+          did: carol.did,
+        },
+        createdBy: 'did:example:admin',
+        reason: 'X',
+      },
+      {
+        encoding: 'application/json',
+        headers: { authorization: util.adminAuth() },
+      },
+    )
     await agent.api.com.atproto.server.deleteAccount({
       token,
       did: carol.did,
       password: carol.password,
     })
+    await server.ctx.backgroundQueue.processAll() // Finish background hard-deletions
   })
 
   it('no longer lets the user log in', async () => {
@@ -141,6 +164,9 @@ describe('account deletion', () => {
     )
     expect(updatedDbContents.users).toEqual(
       initialDbContents.users.filter((row) => row.did !== carol.did),
+    )
+    expect(updatedDbContents.userState).toEqual(
+      initialDbContents.userState.filter((row) => row.did !== carol.did),
     )
     expect(updatedDbContents.blocks).toEqual(
       initialDbContents.blocks.filter((row) => row.creator !== carol.did),
@@ -167,6 +193,15 @@ describe('account deletion', () => {
     )
     expect(updatedDbContents.likes).toEqual(
       initialDbContents.likes.filter((row) => row.creator !== carol.did),
+    )
+    expect(updatedDbContents.actorBlocks).toEqual(
+      initialDbContents.actorBlocks.filter((row) => row.creator !== carol.did),
+    )
+    expect(updatedDbContents.lists).toEqual(
+      initialDbContents.lists.filter((row) => row.creator !== carol.did),
+    )
+    expect(updatedDbContents.listItems).toEqual(
+      initialDbContents.listItems.filter((row) => row.creator !== carol.did),
     )
     expect(updatedDbContents.reposts).toEqual(
       initialDbContents.reposts.filter((row) => row.creator !== carol.did),
@@ -256,6 +291,7 @@ describe('account deletion', () => {
 type DbContents = {
   roots: RepoRoot[]
   users: UserAccount[]
+  userState: UserState[]
   blocks: IpldBlock[]
   seqs: Selectable<RepoSeq>[]
   commitHistories: RepoCommitHistory[]
@@ -268,6 +304,9 @@ type DbContents = {
   likes: Like[]
   reposts: Repost[]
   follows: Follow[]
+  actorBlocks: ActorBlock[]
+  lists: List[]
+  listItems: ListItem[]
   repoBlobs: RepoBlob[]
   blobs: Blob[]
 }
@@ -276,6 +315,7 @@ const getDbContents = async (db: Database): Promise<DbContents> => {
   const [
     roots,
     users,
+    userState,
     blocks,
     seqs,
     commitHistories,
@@ -288,11 +328,15 @@ const getDbContents = async (db: Database): Promise<DbContents> => {
     likes,
     reposts,
     follows,
+    actorBlocks,
+    lists,
+    listItems,
     repoBlobs,
     blobs,
   ] = await Promise.all([
     db.db.selectFrom('repo_root').orderBy('did').selectAll().execute(),
     db.db.selectFrom('user_account').orderBy('did').selectAll().execute(),
+    db.db.selectFrom('user_state').orderBy('did').selectAll().execute(),
     db.db
       .selectFrom('ipld_block')
       .orderBy('creator')
@@ -333,6 +377,9 @@ const getDbContents = async (db: Database): Promise<DbContents> => {
     db.db.selectFrom('like').orderBy('uri').selectAll().execute(),
     db.db.selectFrom('repost').orderBy('uri').selectAll().execute(),
     db.db.selectFrom('follow').orderBy('uri').selectAll().execute(),
+    db.db.selectFrom('actor_block').orderBy('uri').selectAll().execute(),
+    db.db.selectFrom('list').orderBy('uri').selectAll().execute(),
+    db.db.selectFrom('list_item').orderBy('uri').selectAll().execute(),
     db.db
       .selectFrom('repo_blob')
       .orderBy('did')
@@ -345,6 +392,7 @@ const getDbContents = async (db: Database): Promise<DbContents> => {
   return {
     roots,
     users,
+    userState,
     blocks,
     seqs,
     commitHistories,
@@ -357,6 +405,9 @@ const getDbContents = async (db: Database): Promise<DbContents> => {
     likes,
     reposts,
     follows,
+    actorBlocks,
+    lists,
+    listItems,
     repoBlobs,
     blobs,
   }

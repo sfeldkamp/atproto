@@ -1,4 +1,4 @@
-import { DAY } from '@atproto/common'
+import { parseIntWithFallback, DAY, HOUR } from '@atproto/common'
 
 export interface ServerConfigValues {
   debugMode?: boolean
@@ -18,10 +18,13 @@ export interface ServerConfigValues {
   jwtSecret: string
 
   didPlcUrl: string
+  didCacheStaleTTL: number
+  didCacheMaxTTL: number
 
   serverDid: string
   recoveryKey: string
   adminPassword: string
+  moderatorPassword?: string
 
   inviteRequired: boolean
   userInviteInterval: number | null
@@ -45,10 +48,15 @@ export interface ServerConfigValues {
   labelerDid: string
   labelerKeywords: Record<string, string>
 
+  feedGenDid?: string
+
   maxSubscriptionBuffer: number
   repoBackfillLimitMs: number
 
   appViewRepoProvider?: string
+
+  bskyAppViewEndpoint?: string
+  bskyAppViewDid?: string
 }
 
 export class ServerConfig {
@@ -78,6 +86,14 @@ export class ServerConfig {
     const jwtSecret = process.env.JWT_SECRET || 'jwt_secret'
 
     const didPlcUrl = process.env.DID_PLC_URL || 'http://localhost:2582'
+    const didCacheStaleTTL = parseIntWithFallback(
+      process.env.DID_CACHE_STALE_TTL,
+      HOUR,
+    )
+    const didCacheMaxTTL = parseIntWithFallback(
+      process.env.DID_CACHE_MAX_TTL,
+      DAY,
+    )
 
     const serverDid = overrides?.serverDid || process.env.SERVER_DID
     if (typeof serverDid !== 'string') {
@@ -90,6 +106,7 @@ export class ServerConfig {
     }
 
     const adminPassword = process.env.ADMIN_PASSWORD || 'admin'
+    const moderatorPassword = process.env.MODERATOR_PASSWORD || undefined
 
     const inviteRequired = process.env.INVITE_REQUIRED === 'true' ? true : false
     const userInviteInterval = parseIntWithFallback(
@@ -128,6 +145,8 @@ export class ServerConfig {
     const labelerDid = process.env.LABELER_DID || 'did:example:labeler'
     const labelerKeywords = {}
 
+    const feedGenDid = process.env.FEED_GEN_DID
+
     const dbPostgresUrl = process.env.DB_POSTGRES_URL
     const dbPostgresSchema = process.env.DB_POSTGRES_SCHEMA
 
@@ -142,7 +161,13 @@ export class ServerConfig {
     )
 
     // E.g. ws://abc.com:4000
-    const appViewRepoProvider = process.env.APP_VIEW_REPO_PROVIDER || undefined
+    const appViewRepoProvider = nonemptyString(
+      process.env.APP_VIEW_REPO_PROVIDER,
+    )
+    const bskyAppViewEndpoint = nonemptyString(
+      process.env.BSKY_APP_VIEW_ENDPOINT,
+    )
+    const bskyAppViewDid = nonemptyString(process.env.BSKY_APP_VIEW_DID)
 
     return new ServerConfig({
       debugMode,
@@ -158,8 +183,11 @@ export class ServerConfig {
       jwtSecret,
       recoveryKey,
       didPlcUrl,
+      didCacheStaleTTL,
+      didCacheMaxTTL,
       serverDid,
       adminPassword,
+      moderatorPassword,
       inviteRequired,
       userInviteInterval,
       privacyPolicyUrl,
@@ -176,9 +204,12 @@ export class ServerConfig {
       hiveApiKey,
       labelerDid,
       labelerKeywords,
+      feedGenDid,
       maxSubscriptionBuffer,
       repoBackfillLimitMs,
       appViewRepoProvider,
+      bskyAppViewEndpoint,
+      bskyAppViewDid,
       ...overrides,
     })
   }
@@ -245,6 +276,14 @@ export class ServerConfig {
     return this.cfg.didPlcUrl
   }
 
+  get didCacheStaleTTL() {
+    return this.cfg.didCacheStaleTTL
+  }
+
+  get didCacheMaxTTL() {
+    return this.cfg.didCacheMaxTTL
+  }
+
   get serverDid() {
     return this.cfg.serverDid
   }
@@ -255,6 +294,10 @@ export class ServerConfig {
 
   get adminPassword() {
     return this.cfg.adminPassword
+  }
+
+  get moderatorPassword() {
+    return this.cfg.moderatorPassword
   }
 
   get inviteRequired() {
@@ -337,6 +380,10 @@ export class ServerConfig {
     return this.cfg.labelerKeywords
   }
 
+  get feedGenDid() {
+    return this.cfg.feedGenDid
+  }
+
   get maxSubscriptionBuffer() {
     return this.cfg.maxSubscriptionBuffer
   }
@@ -348,12 +395,17 @@ export class ServerConfig {
   get appViewRepoProvider() {
     return this.cfg.appViewRepoProvider
   }
+
+  get bskyAppViewEndpoint() {
+    return this.cfg.bskyAppViewEndpoint
+  }
+
+  get bskyAppViewDid() {
+    return this.cfg.bskyAppViewDid
+  }
 }
 
-const parseIntWithFallback = <T>(
-  value: string | undefined,
-  fallback: T,
-): number | T => {
-  const parsed = parseInt(value || '', 10)
-  return isNaN(parsed) ? fallback : parsed
+const nonemptyString = (str: string | undefined): string | undefined => {
+  if (str === undefined || str.length === 0) return undefined
+  return str
 }

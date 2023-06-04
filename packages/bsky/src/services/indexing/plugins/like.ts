@@ -4,9 +4,8 @@ import { CID } from 'multiformats/cid'
 import * as Like from '../../../lexicon/types/app/bsky/feed/like'
 import * as lex from '../../../lexicon/lexicons'
 import { DatabaseSchema, DatabaseSchemaType } from '../../../db/database-schema'
-import * as messages from '../messages'
-import { Message } from '../messages'
 import RecordProcessor from '../processor'
+import { toSimplifiedISOSafe } from '../util'
 
 const lexId = lex.ids.AppBskyFeedLike
 type IndexedLike = Selectable<DatabaseSchemaType['like']>
@@ -26,7 +25,7 @@ const insertFn = async (
       creator: uri.host,
       subject: obj.subject.uri,
       subjectCid: obj.subject.cid,
-      createdAt: obj.createdAt,
+      createdAt: toSimplifiedISOSafe(obj.createdAt),
       indexedAt: timestamp,
     })
     .onConflict((oc) => oc.doNothing())
@@ -49,20 +48,19 @@ const findDuplicate = async (
   return found ? new AtUri(found.uri) : null
 }
 
-const createNotif = (obj: IndexedLike) => {
+const notifsForInsert = (obj: IndexedLike) => {
   const subjectUri = new AtUri(obj.subject)
-  return messages.createNotification({
-    userDid: subjectUri.host,
-    author: obj.creator,
-    recordUri: obj.uri,
-    recordCid: obj.cid,
-    reason: 'like',
-    reasonSubject: subjectUri.toString(),
-  })
-}
-
-const eventsForInsert = (obj: IndexedLike) => {
-  return [createNotif(obj)]
+  return [
+    {
+      did: subjectUri.host,
+      author: obj.creator,
+      recordUri: obj.uri,
+      recordCid: obj.cid,
+      reason: 'like' as const,
+      reasonSubject: subjectUri.toString(),
+      sortAt: obj.indexedAt,
+    },
+  ]
 }
 
 const deleteFn = async (
@@ -77,14 +75,12 @@ const deleteFn = async (
   return deleted || null
 }
 
-const eventsForDelete = (
+const notifsForDelete = (
   deleted: IndexedLike,
   replacedBy: IndexedLike | null,
-): Message[] => {
-  if (!replacedBy) {
-    return [messages.deleteNotifications(deleted.uri)]
-  }
-  return []
+) => {
+  const toDelete = replacedBy ? [] : [deleted.uri]
+  return { notifs: [], toDelete }
 }
 
 export type PluginType = RecordProcessor<Like.Record, IndexedLike>
@@ -95,8 +91,8 @@ export const makePlugin = (db: DatabaseSchema): PluginType => {
     insertFn,
     findDuplicate,
     deleteFn,
-    eventsForInsert,
-    eventsForDelete,
+    notifsForInsert,
+    notifsForDelete,
   })
 }
 

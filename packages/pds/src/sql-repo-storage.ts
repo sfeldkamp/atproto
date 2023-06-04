@@ -25,44 +25,28 @@ export class SqlRepoStorage extends RepoStorage {
     super()
   }
 
-  async getHead(forUpdate?: boolean): Promise<CID | null> {
-    // if for update, we lock the row
+  // note this method will return null if the repo has a lock on it currently
+  async lockHead(): Promise<CID | null> {
     let builder = this.db.db
       .selectFrom('repo_root')
       .selectAll()
       .where('did', '=', this.did)
-    if (forUpdate && this.db.dialect !== 'sqlite') {
-      // SELECT FOR UPDATE is not supported by sqlite, but sqlite txs are SERIALIZABLE so we don't actually need it
-      builder = builder.forUpdate()
+    if (this.db.dialect !== 'sqlite') {
+      builder = builder.forUpdate().skipLocked()
     }
-    const found = await builder.executeTakeFirst()
-    if (!found) return null
+    const res = await builder.executeTakeFirst()
+    if (!res) return null
+    return CID.parse(res.root)
+  }
 
-    // if for update, we cache the blocks from last commit
-    // this must be split out into a separate query because of how pg handles SELECT FOR UPDATE with outer joins
-    if (forUpdate) {
-      const res = await this.db.db
-        .selectFrom('repo_commit_block')
-        .where('repo_commit_block.commit', '=', found.root)
-        .where('repo_commit_block.creator', '=', this.did)
-        .leftJoin('ipld_block', (join) =>
-          join
-            .onRef('ipld_block.cid', '=', 'repo_commit_block.commit')
-            .on('ipld_block.creator', '=', this.did),
-        )
-        .select([
-          'ipld_block.cid as blockCid',
-          'ipld_block.content as blockBytes',
-        ])
-        .execute()
-      res.forEach((row) => {
-        if (row.blockCid && row.blockBytes) {
-          this.cache.set(CID.parse(row.blockCid), row.blockBytes)
-        }
-      })
-    }
-
-    return CID.parse(found.root)
+  async getHead(): Promise<CID | null> {
+    const res = await this.db.db
+      .selectFrom('repo_root')
+      .selectAll()
+      .where('did', '=', this.did)
+      .executeTakeFirst()
+    if (!res) return null
+    return CID.parse(res.root)
   }
 
   async getBytes(cid: CID): Promise<Uint8Array | null> {
@@ -135,6 +119,7 @@ export class SqlRepoStorage extends RepoStorage {
         size: bytes.length,
         content: bytes,
       })
+      this.cache.addMap(toPut)
     })
     await Promise.all(
       chunkArray(blocks, 500).map((batch) =>
@@ -168,21 +153,16 @@ export class SqlRepoStorage extends RepoStorage {
     await this.db.db
       .deleteFrom('ipld_block')
       .where('ipld_block.creator', '=', this.did)
-      .where(
-        'cid',
-        'in',
-        this.db.db
-          .selectFrom('ipld_block as block')
-          .leftJoin('repo_commit_block', (join) =>
-            join
-              .onRef('block.creator', '=', 'repo_commit_block.creator')
-              .onRef('block.cid', '=', 'repo_commit_block.block'),
-          )
-          .where('repo_commit_block.creator', 'is', null)
-          .select('block.cid'),
+      .whereNotExists((qb) =>
+        qb
+          .selectFrom('repo_commit_block')
+          .selectAll()
+          .where('repo_commit_block.creator', '=', this.did)
+          .where('repo_commit_block.commit', '=', rebase.commit.toString())
+          .whereRef('repo_commit_block.block', '=', 'ipld_block.cid'),
       )
       .execute()
-    await this.updateHead(rebase.commit, null)
+    await this.updateHead(rebase.commit, rebase.rebased)
   }
 
   async indexCommits(commits: CommitData[]): Promise<void> {
@@ -252,9 +232,6 @@ export class SqlRepoStorage extends RepoStorage {
           root: cid.toString(),
           indexedAt: this.getTimestamp(),
         })
-        .onConflict((oc) =>
-          oc.column('did').doUpdateSet({ root: cid.toString() }),
-        )
         .execute()
     } else {
       const res = await this.db.db
@@ -307,10 +284,9 @@ export class SqlRepoStorage extends RepoStorage {
       .execute()
     return res.map((row) => CID.parse(row.commit)).reverse()
   }
-  async getBlocksForCommits(
-    commits: CID[],
-  ): Promise<{ [commit: string]: BlockMap }> {
-    if (commits.length === 0) return {}
+
+  async getAllBlocksForCommits(commits: CID[]): Promise<BlockForCommit[]> {
+    if (commits.length === 0) return []
     const commitStrs = commits.map((commit) => commit.toString())
     const res = await this.db.db
       .selectFrom('repo_commit_block')
@@ -327,11 +303,21 @@ export class SqlRepoStorage extends RepoStorage {
         'ipld_block.content',
       ])
       .execute()
-    return res.reduce((acc, cur) => {
+    return res.map((row) => ({
+      cid: CID.parse(row.cid),
+      bytes: row.content,
+      commit: row.commit,
+    }))
+  }
+
+  async getBlocksForCommits(
+    commits: CID[],
+  ): Promise<{ [commit: string]: BlockMap }> {
+    const allBlocks = await this.getAllBlocksForCommits(commits)
+    return allBlocks.reduce((acc, cur) => {
       acc[cur.commit] ??= new BlockMap()
-      const cid = CID.parse(cur.cid)
-      acc[cur.commit].set(cid, cur.content)
-      this.cache.set(cid, cur.content)
+      acc[cur.commit].set(cur.cid, cur.bytes)
+      this.cache.set(cur.cid, cur.bytes)
       return acc
     }, {})
   }
@@ -339,6 +325,12 @@ export class SqlRepoStorage extends RepoStorage {
   async destroy(): Promise<void> {
     throw new Error('Destruction of SQL repo storage not allowed at runtime')
   }
+}
+
+type BlockForCommit = {
+  cid: CID
+  bytes: Uint8Array
+  commit: string
 }
 
 export default SqlRepoStorage

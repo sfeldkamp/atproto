@@ -1,5 +1,15 @@
 import assert from 'assert'
-import { Kysely, PostgresDialect, Migrator } from 'kysely'
+import {
+  Kysely,
+  PostgresDialect,
+  Migrator,
+  KyselyPlugin,
+  PluginTransformQueryArgs,
+  PluginTransformResultArgs,
+  RootOperationNode,
+  QueryResult,
+  UnknownRow,
+} from 'kysely'
 import { Pool as PgPool, types as pgTypes } from 'pg'
 import DatabaseSchema, { DatabaseSchemaType } from './database-schema'
 import * as migrations from './migrations'
@@ -25,17 +35,18 @@ export class Database {
     pgTypes.setTypeParser(pgTypes.builtins.INT8, (n) => parseInt(n, 10))
 
     // Setup schema usage, primarily for test parallelism (each test suite runs in its own pg schema)
-    if (schema !== undefined) {
-      if (!/^[a-z_]+$/i.test(schema)) {
-        throw new Error(
-          `Postgres schema must only contain [A-Za-z_]: ${schema}`,
-        )
-      }
-      pool.on('connect', (client) => {
-        // Shared objects such as extensions will go in the public schema
-        client.query(`SET search_path TO "${schema}",public`)
-      })
+    if (schema && !/^[a-z_]+$/i.test(schema)) {
+      throw new Error(`Postgres schema must only contain [A-Za-z_]: ${schema}`)
     }
+
+    pool.on('connect', (client) => {
+      // Used for trigram indexes, e.g. on actor search
+      client.query('SET pg_trgm.strict_word_similarity_threshold TO .1;')
+      if (schema) {
+        // Shared objects such as extensions will go in the public schema
+        client.query(`SET search_path TO "${schema}",public;`)
+      }
+    })
 
     const db = new Kysely<DatabaseSchemaType>({
       dialect: new PostgresDialect({ pool }),
@@ -45,11 +56,22 @@ export class Database {
   }
 
   async transaction<T>(fn: (db: Database) => Promise<T>): Promise<T> {
-    const res = await this.db.transaction().execute(async (txn) => {
-      const dbTxn = new Database(txn, this.cfg)
-      const txRes = await fn(dbTxn)
-      return txRes
-    })
+    const leakyTxPlugin = new LeakyTxPlugin()
+    const res = await this.db
+      .withPlugin(leakyTxPlugin)
+      .transaction()
+      .execute(async (txn) => {
+        const dbTxn = new Database(txn, this.cfg)
+        const txRes = await fn(dbTxn)
+          .catch(async (err) => {
+            leakyTxPlugin.endTx()
+            // ensure that all in-flight queries are flushed & the connection is open
+            await dbTxn.db.getExecutor().provideConnection(async () => {})
+            throw err
+          })
+          .finally(() => leakyTxPlugin.endTx())
+        return txRes
+      })
     return res
   }
 
@@ -72,7 +94,7 @@ export class Database {
   }
 
   async migrateToOrThrow(migration: string) {
-    if (this.schema !== undefined) {
+    if (this.schema) {
       await this.db.schema.createSchema(this.schema).ifNotExists().execute()
     }
     const { error, results } = await this.migrator.migrateTo(migration)
@@ -86,7 +108,7 @@ export class Database {
   }
 
   async migrateToLatestOrThrow() {
-    if (this.schema !== undefined) {
+    if (this.schema) {
       await this.db.schema.createSchema(this.schema).ifNotExists().execute()
     }
     const { error, results } = await this.migrator.migrateToLatest()
@@ -113,4 +135,25 @@ type PgOptions = {
   url: string
   pool?: PgPool
   schema?: string
+}
+
+class LeakyTxPlugin implements KyselyPlugin {
+  private txOver: boolean
+
+  endTx() {
+    this.txOver = true
+  }
+
+  transformQuery(args: PluginTransformQueryArgs): RootOperationNode {
+    if (this.txOver) {
+      throw new Error('tx already failed')
+    }
+    return args.node
+  }
+
+  async transformResult(
+    args: PluginTransformResultArgs,
+  ): Promise<QueryResult<UnknownRow>> {
+    return args.result
+  }
 }

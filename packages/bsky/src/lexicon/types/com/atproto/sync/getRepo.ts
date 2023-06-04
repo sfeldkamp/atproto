@@ -14,7 +14,7 @@ export interface QueryParams {
   did: string
   /** The earliest commit in the commit range (not inclusive) */
   earliest?: string
-  /** The latest commit you in the commit range (inclusive */
+  /** The latest commit in the commit range (inclusive) */
   latest?: string
 }
 
@@ -24,6 +24,7 @@ export type HandlerInput = undefined
 export interface HandlerSuccess {
   encoding: 'application/vnd.ipld.car'
   body: Uint8Array | stream.Readable
+  headers?: { [key: string]: string }
 }
 
 export interface HandlerError {

@@ -1,11 +1,11 @@
 import AtpAgent from '@atproto/api'
 import { TAKEDOWN } from '@atproto/api/src/client/types/com/atproto/admin/defs'
 import {
-  runTestServer,
   forSnapshot,
-  CloseFn,
   paginateAll,
   adminAuth,
+  runTestServer,
+  CloseFn,
 } from '../_util'
 import { SeedClient } from '../seeds/client'
 import followsSeed from '../seeds/follows'
@@ -27,6 +27,7 @@ describe('pds follow views', () => {
     sc = new SeedClient(agent)
     await followsSeed(sc)
     alice = sc.dids.alice
+    await server.ctx.backgroundQueue.processAll()
   })
 
   afterAll(async () => {

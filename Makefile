@@ -22,10 +22,15 @@ test: ## Run all tests
 run-dev-env: ## Run a "development environment" shell
 	cd packages/dev-env; yarn run start
 
-.PHONY: run-pds
-run-pds: ## Run PDS locally
+.PHONY: run-dev-pds
+run-dev-pds: ## Run PDS locally
 	if [ ! -f "packages/pds/.dev.env" ]; then cp packages/pds/example.dev.env packages/pds/.dev.env; fi
 	cd packages/pds; ENV=dev yarn run start | yarn exec pino-pretty
+
+.PHONY: run-dev-bsky
+run-dev-bsky: ## Run appview ('bsky') locally
+	if [ ! -f "packages/bsky/.dev.env" ]; then cp packages/bsky/example.dev.env packages/bsky/.dev.env; fi
+	cd packages/bsky; ENV=dev yarn run start | yarn exec pino-pretty
 
 .PHONY: lint
 lint: ## Run style checks and verify syntax

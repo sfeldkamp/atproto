@@ -12,6 +12,13 @@ import {
   PreparedCreate,
   PreparedUpdate,
 } from '../../../../repo'
+import { ConcurrentWriteError } from '../../../../services/repo'
+
+const ALLOWED_PUTS = [
+  ids.AppBskyActorProfile,
+  ids.AppBskyGraphList,
+  ids.AppBskyFeedGenerator,
+]
 
 export default function (server: Server, ctx: AppContext) {
   server.com.atproto.repo.putRecord({
@@ -34,10 +41,12 @@ export default function (server: Server, ctx: AppContext) {
       if (did !== auth.credentials.did) {
         throw new AuthRequiredError()
       }
-      if (collection !== ids.AppBskyActorProfile || rkey !== 'self') {
+      if (!ALLOWED_PUTS.includes(collection)) {
         // @TODO temporary
         throw new InvalidRequestError(
-          `Temporarily only accepting puts for ${ids.AppBskyActorProfile}/self.`,
+          `Temporarily only accepting puts for collections: ${ALLOWED_PUTS.join(
+            ', ',
+          )}`,
         )
       }
       if (validate === false) {
@@ -46,52 +55,53 @@ export default function (server: Server, ctx: AppContext) {
         )
       }
 
-      const now = new Date().toISOString()
       const uri = AtUri.make(did, collection, rkey)
       const swapCommitCid = swapCommit ? CID.parse(swapCommit) : undefined
       const swapRecordCid =
         typeof swapRecord === 'string' ? CID.parse(swapRecord) : swapRecord
 
-      const write = await ctx.db.transaction(async (dbTxn) => {
-        const repoTxn = ctx.services.repo(dbTxn)
-        const recordTxn = ctx.services.record(dbTxn)
+      const current = await ctx.services
+        .record(ctx.db)
+        .getRecord(uri, null, true)
+      const writeInfo = {
+        did,
+        collection,
+        rkey,
+        record,
+        swapCid: swapRecordCid,
+        validate,
+      }
 
-        const current = await recordTxn.getRecord(uri, null, true)
-        const writeInfo = {
-          did,
-          collection,
-          rkey,
-          record,
-          swapCid: swapRecordCid,
-          validate,
+      let write: PreparedCreate | PreparedUpdate
+      try {
+        write = current
+          ? await prepareUpdate(writeInfo)
+          : await prepareCreate(writeInfo)
+      } catch (err) {
+        if (err instanceof InvalidRecordError) {
+          throw new InvalidRequestError(err.message)
         }
+        throw err
+      }
 
-        let write: PreparedCreate | PreparedUpdate
-        try {
-          write = current
-            ? await prepareUpdate(writeInfo)
-            : await prepareCreate(writeInfo)
-        } catch (err) {
-          if (err instanceof InvalidRecordError) {
-            throw new InvalidRequestError(err.message)
-          }
+      const writes = [write]
+
+      try {
+        await ctx.services
+          .repo(ctx.db)
+          .processWrites({ did, writes, swapCommitCid }, 10)
+      } catch (err) {
+        if (
+          err instanceof BadCommitSwapError ||
+          err instanceof BadRecordSwapError
+        ) {
+          throw new InvalidRequestError(err.message, 'InvalidSwap')
+        } else if (err instanceof ConcurrentWriteError) {
+          throw new InvalidRequestError(err.message, 'ConcurrentWrites')
+        } else {
           throw err
         }
-
-        try {
-          await repoTxn.processWrites(did, [write], now, swapCommitCid)
-        } catch (err) {
-          if (
-            err instanceof BadCommitSwapError ||
-            err instanceof BadRecordSwapError
-          ) {
-            throw new InvalidRequestError(err.message, 'InvalidSwap')
-          } else {
-            throw err
-          }
-        }
-        return write
-      })
+      }
 
       return {
         encoding: 'application/json',

@@ -1,43 +1,48 @@
 import axios, { AxiosInstance } from 'axios'
 import { CID } from 'multiformats/cid'
-import { AtpAgent } from '@atproto/api'
 import { verifyCidForBytes } from '@atproto/common'
-import { runTestServer, TestServerInfo } from './_util'
+import { TestNetwork } from '@atproto/dev-env'
 import { SeedClient } from './seeds/client'
 import basicSeed from './seeds/basic'
 import { randomBytes } from '@atproto/crypto'
 
 describe('blob resolver', () => {
-  let server: TestServerInfo
+  let network: TestNetwork
   let client: AxiosInstance
   let fileDid: string
   let fileCid: CID
 
   beforeAll(async () => {
-    server = await runTestServer({
-      dbPostgresSchema: 'blob_resolver',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_blob_resolver',
     })
-    const pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    const pdsAgent = network.pds.getClient()
     const sc = new SeedClient(pdsAgent)
     await basicSeed(sc)
+    await network.processAll()
     fileDid = sc.dids.carol
     fileCid = sc.posts[fileDid][0].images[0].image.ref
     client = axios.create({
-      baseURL: server.url,
+      baseURL: network.bsky.url,
       validateStatus: () => true,
     })
   })
 
   afterAll(async () => {
-    if (server) server.close()
+    await network.close()
   })
 
   it('resolves blob with good signature check.', async () => {
-    const { data, status } = await client.get(
+    const { data, status, headers } = await client.get(
       `/blob/${fileDid}/${fileCid.toString()}`,
       { responseType: 'arraybuffer' },
     )
     expect(status).toEqual(200)
+    expect(headers['content-type']).toEqual('image/jpeg')
+    expect(headers['content-security-policy']).toEqual(
+      `default-src 'none'; sandbox`,
+    )
+    expect(headers['x-content-type-options']).toEqual('nosniff')
     await expect(verifyCidForBytes(fileCid, data)).resolves.toBeUndefined()
   })
 
@@ -73,8 +78,8 @@ describe('blob resolver', () => {
   })
 
   it('fails on blob with bad signature check.', async () => {
-    await server.pds.ctx.blobstore.delete(fileCid)
-    await server.pds.ctx.blobstore.putPermanent(fileCid, randomBytes(100))
+    await network.pds.ctx.blobstore.delete(fileCid)
+    await network.pds.ctx.blobstore.putPermanent(fileCid, randomBytes(100))
     const tryGetBlob = client.get(`/blob/${fileDid}/${fileCid.toString()}`)
     await expect(tryGetBlob).rejects.toThrow(
       'maxContentLength size of -1 exceeded',

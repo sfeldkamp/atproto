@@ -1,22 +1,13 @@
 import AtpAgent from '@atproto/api'
+import { TestNetwork } from '@atproto/dev-env'
 import { SeedClient } from '../seeds/client'
 import likesSeed from '../seeds/likes'
-import {
-  CloseFn,
-  constantDate,
-  forSnapshot,
-  paginateAll,
-  processAll,
-  runTestServer,
-  stripViewer,
-  TestServerInfo,
-} from '../_util'
+import { constantDate, forSnapshot, paginateAll, stripViewer } from '../_util'
 
 describe('pds like views', () => {
-  let server: TestServerInfo
+  let network: TestNetwork
   let agent: AtpAgent
   let pdsAgent: AtpAgent
-  let close: CloseFn
   let sc: SeedClient
 
   // account dids, for convenience
@@ -24,21 +15,20 @@ describe('pds like views', () => {
   let bob: string
 
   beforeAll(async () => {
-    server = await runTestServer({
-      dbPostgresSchema: 'views_likes',
+    network = await TestNetwork.create({
+      dbPostgresSchema: 'bsky_views_likes',
     })
-    close = server.close
-    agent = new AtpAgent({ service: server.url })
-    pdsAgent = new AtpAgent({ service: server.pdsUrl })
+    agent = network.bsky.getClient()
+    pdsAgent = network.pds.getClient()
     sc = new SeedClient(pdsAgent)
     await likesSeed(sc)
-    await processAll(server)
+    await network.processAll()
     alice = sc.dids.alice
     bob = sc.dids.bob
   })
 
   afterAll(async () => {
-    await close()
+    await network.close()
   })
 
   const getCursors = (items: { createdAt?: string }[]) =>
@@ -52,7 +42,7 @@ describe('pds like views', () => {
   it('fetches post likes', async () => {
     const alicePost = await agent.api.app.bsky.feed.getLikes(
       { uri: sc.posts[alice][1].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
 
     expect(forSnapshot(alicePost.data)).toMatchSnapshot()
@@ -64,7 +54,7 @@ describe('pds like views', () => {
   it('fetches reply likes', async () => {
     const bobReply = await agent.api.app.bsky.feed.getLikes(
       { uri: sc.replies[bob][0].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
 
     expect(forSnapshot(bobReply.data)).toMatchSnapshot()
@@ -82,7 +72,7 @@ describe('pds like views', () => {
           cursor,
           limit: 2,
         },
-        { headers: sc.getHeaders(alice, true) },
+        { headers: await network.serviceHeaders(alice) },
       )
       return res.data
     }
@@ -94,7 +84,7 @@ describe('pds like views', () => {
 
     const full = await agent.api.app.bsky.feed.getLikes(
       { uri: sc.posts[alice][1].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
 
     expect(full.data.likes.length).toEqual(4)
@@ -104,7 +94,7 @@ describe('pds like views', () => {
   it('fetches post likes unauthed', async () => {
     const { data: authed } = await agent.api.app.bsky.feed.getLikes(
       { uri: sc.posts[alice][1].ref.uriStr },
-      { headers: sc.getHeaders(alice, true) },
+      { headers: await network.serviceHeaders(alice) },
     )
     const { data: unauthed } = await agent.api.app.bsky.feed.getLikes({
       uri: sc.posts[alice][1].ref.uriStr,

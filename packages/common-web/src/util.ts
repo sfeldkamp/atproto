@@ -40,7 +40,7 @@ export const flattenUint8Arrays = (arrs: Uint8Array[]): Uint8Array => {
   return flattened
 }
 
-export const streamToArray = async (
+export const streamToBuffer = async (
   stream: AsyncIterable<Uint8Array>,
 ): Promise<Uint8Array> => {
   const arrays: Uint8Array[] = []
@@ -105,4 +105,16 @@ export const range = (num: number): number[] => {
     nums.push(i)
   }
   return nums
+}
+
+export const dedupeStrs = (strs: string[]): string[] => {
+  return [...new Set(strs)]
+}
+
+export const parseIntWithFallback = <T>(
+  value: string | undefined,
+  fallback: T,
+): number | T => {
+  const parsed = parseInt(value || '', 10)
+  return isNaN(parsed) ? fallback : parsed
 }

@@ -1,19 +1,27 @@
 import assert from 'assert'
+import { DAY, HOUR, parseIntWithFallback } from '@atproto/common'
 
 export interface ServerConfigValues {
   version: string
   debugMode?: boolean
   port?: number
   publicUrl?: string
+  serverDid: string
   dbPostgresUrl: string
   dbPostgresSchema?: string
   didPlcUrl: string
+  didCacheStaleTTL: number
+  didCacheMaxTTL: number
   imgUriSalt: string
   imgUriKey: string
   imgUriEndpoint?: string
   blobCacheLocation?: string
   repoProvider?: string
   repoSubLockId?: number
+  labelerDid: string
+  hiveApiKey?: string
+  adminPassword: string
+  labelerKeywords: Record<string, string>
 }
 
 export class ServerConfig {
@@ -24,9 +32,18 @@ export class ServerConfig {
     const version = process.env.BSKY_VERSION || '0.0.0'
     const debugMode = process.env.NODE_ENV !== 'production'
     const publicUrl = process.env.PUBLIC_URL || undefined
+    const serverDid = process.env.SERVER_DID || 'did:example:test'
     const envPort = parseInt(process.env.PORT || '', 10)
     const port = isNaN(envPort) ? 2584 : envPort
     const didPlcUrl = process.env.DID_PLC_URL || 'http://localhost:2582'
+    const didCacheStaleTTL = parseIntWithFallback(
+      process.env.DID_CACHE_STALE_TTL,
+      HOUR,
+    )
+    const didCacheMaxTTL = parseIntWithFallback(
+      process.env.DID_CACHE_MAX_TTL,
+      DAY,
+    )
     const imgUriSalt =
       process.env.IMG_URI_SALT || '9dd04221f5755bce5f55f47464c27e1e'
     const imgUriKey =
@@ -39,19 +56,30 @@ export class ServerConfig {
     assert(dbPostgresUrl)
     const dbPostgresSchema = process.env.DB_POSTGRES_SCHEMA
     const repoProvider = process.env.REPO_PROVIDER // E.g. ws://abc.com:4000
+    const adminPassword = process.env.ADMIN_PASSWORD || 'admin'
+    const labelerDid = process.env.LABELER_DID || 'did:example:labeler'
+    const hiveApiKey = process.env.HIVE_API_KEY || undefined
+    const labelerKeywords = {}
     return new ServerConfig({
       version,
       debugMode,
       port,
       publicUrl,
+      serverDid,
       dbPostgresUrl,
       dbPostgresSchema,
       didPlcUrl,
+      didCacheStaleTTL,
+      didCacheMaxTTL,
       imgUriSalt,
       imgUriKey,
       imgUriEndpoint,
       blobCacheLocation,
       repoProvider,
+      labelerDid,
+      hiveApiKey,
+      adminPassword,
+      labelerKeywords,
       ...stripUndefineds(overrides ?? {}),
     })
   }
@@ -85,12 +113,24 @@ export class ServerConfig {
     return this.cfg.publicUrl
   }
 
+  get serverDid() {
+    return this.cfg.serverDid
+  }
+
   get dbPostgresUrl() {
     return this.cfg.dbPostgresUrl
   }
 
   get dbPostgresSchema() {
     return this.cfg.dbPostgresSchema
+  }
+
+  get didCacheStaleTTL() {
+    return this.cfg.didCacheStaleTTL
+  }
+
+  get didCacheMaxTTL() {
+    return this.cfg.didCacheStaleTTL
   }
 
   get didPlcUrl() {
@@ -119,6 +159,22 @@ export class ServerConfig {
 
   get repoSubLockId() {
     return this.cfg.repoSubLockId
+  }
+
+  get labelerDid() {
+    return this.cfg.labelerDid
+  }
+
+  get hiveApiKey() {
+    return this.cfg.hiveApiKey
+  }
+
+  get labelerKeywords() {
+    return this.cfg.labelerKeywords
+  }
+
+  get adminPassword() {
+    return this.cfg.adminPassword
   }
 }
 
